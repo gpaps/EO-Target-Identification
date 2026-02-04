@@ -1,0 +1,15 @@
+services:
+  Optical_ship_model_trainer:
+    build: .
+    image: esa-axis3-model-trainer
+    container_name: Optical_ship_model_trainer
+    shm_size: 8gb
+    runtime: nvidia
+    environment:
+      - PYTHONPATH=/app
+      - NVIDIA_VISIBLE_DEVICES=${CUDA_DEVICES:-0}  # Controls actual device access
+    volumes:
+      - .:/app
+      - ${DATASETS_PATH:-../datasets}:/datasets
+      - ${OUTPUT_PATH:-../output}:/output
+    command: tail -f /dev/null

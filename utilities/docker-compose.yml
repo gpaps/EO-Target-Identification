@@ -1,0 +1,22 @@
+
+services:
+  sar_ship_model_trainer:
+    build: ..
+    image: esa-axis3-model-trainer
+    container_name: sar_ship_model_trainer
+    shm_size: 8gb
+    volumes:
+      - .:/app
+      - ${DATASETS_PATH:-../datasets}:/datasets
+      - ${OUTPUT_PATH:-../output}:/output
+    environment:
+      - PYTHONPATH=/app
+      - CUDA_VISIBLE_DEVICES=${CUDA_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: tail -f /dev/null # Keep container running
