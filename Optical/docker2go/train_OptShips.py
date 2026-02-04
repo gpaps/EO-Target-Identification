@@ -41,22 +41,28 @@ class ClassAwareMapper(DatasetMapper):
         super().__init__(cfg, is_train=is_train)
         self.cfg = cfg
         self.standard_aug = [
-            T.ResizeShortestEdge(short_edge_length=(720, 1024), sample_style="range"),
-            T.RandomBrightness(0.85, 1.15),
-            T.RandomContrast(0.85, 1.15),
-            T.RandomSaturation(0.85, 1.15),
-            T.RandomFlip(prob=0.3, horizontal=True, vertical=False),
-            T.RandomApply(T.RandomRotation(angle=[-3, 3]), prob=0.2),
-            # T_DownsampleAug(scale_factor=3, prob=1.0)
-        ]
-        self.extra_aug = [
-            T.RandomApply(T.RandomRotation(angle=[-2, 2]), prob=0.1),
-            # T.RandomApply(T.RandomRotation(angle=[-8, 8]), prob=0.2),
-            T.RandomApply(GaussianBlurAll(sigma_range=(1.0, 1.2)), prob=0.1),
-            T.RandomApply(T.RandomLighting(0.2), prob=0.1),
-            # T.RandomLighting(0.3),
-            # GaussianBlurAll(sigma_range=(1.1, 1.2), prob=0.3),
+            # Scaling: Handle resolution differences (SkySat vs xView)
+            T.ResizeShortestEdge(short_edge_length=(800, 1024), sample_style="choice"),
 
+            # Orientation: Space has no "Up". Flip BOTH ways.
+            T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+            T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+        ]
+
+        self.extra_aug = [
+            # Rotation: Ships don't align to a grid.
+            T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
+
+            # Atmospheric/Sensor Simulation: Haze (Blur) and GSD (Downsample)
+            T.RandomApply(GaussianBlurAll(sigma_range=(0.8, 1.5)), prob=0.3),
+
+            # CRITICAL: This mimics "bad" satellite days or lower-res sensors
+            # T_DownsampleAug uses your augmentations.py logic
+            T.RandomApply(T_DownsampleAug(scale_factor=2, prob=1.0), prob=0.3),
+
+            # Lighting: Sun glint and cloud shadows
+            T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.4),
+            T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.4),
         ]
         self.target_class_ids = [2, 4]  # Fishing ships, submarines
 
@@ -65,19 +71,17 @@ class ClassAwareMapper(DatasetMapper):
             dataset_dict.pop("annotations", None)
 
         annos = dataset_dict.get("annotations", [])
+
+        # Strategy: If it's a rare class, hit it with the full augmentation stack
         has_target = any(obj["category_id"] in self.target_class_ids for obj in annos)
-        # TODO enable for extra augmentation on rare classes.
-        aug = self.standard_aug + self.extra_aug if has_target else self.standard_aug
-        # aug = self.standard_aug  # Disable extra augmentations for now
+        aug_list = self.standard_aug + self.extra_aug if has_target else self.standard_aug
 
-        self.augmentations = T.AugmentationList(aug)
+        self.tfm_gens = aug_list
 
-        # Only raise if really problematic
         try:
             return super().__call__(dataset_dict)
         except ValueError as e:
             if len(annos) == 0:
-                # Convert to background image (no GTs)
                 dataset_dict["instances"] = []
                 return dataset_dict
             else:
@@ -128,75 +132,163 @@ class MiniAirEvaluator:
         self.class_names = class_names
         self.bg_idx = len(class_names)
 
-    def plot_canonical_confusion_matrix(self):
-        y_true, y_pred = [], []
-        df = self.df
+    @staticmethod
+    def _iou_matrix(a, b):
+        """
+        Vectorized IoU calculation.
+        a: [Na, 4] (x1, y1, x2, y2)
+        b: [Nb, 4] (x1, y1, x2, y2)
+        Returns: [Na, Nb] IoU matrix
+        """
+        if len(a) == 0 or len(b) == 0:
+            return np.zeros((len(a), len(b)), dtype=np.float32)
 
+        ax1, ay1, ax2, ay2 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+        bx1, by1, bx2, by2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
+        inter_x1 = np.maximum(ax1[:, None], bx1[None, :])
+        inter_y1 = np.maximum(ay1[:, None], by1[None, :])
+        inter_x2 = np.minimum(ax2[:, None], bx2[None, :])
+        inter_y2 = np.minimum(ay2[:, None], by2[None, :])
+
+        inter_w = np.clip(inter_x2 - inter_x1, 0, None)
+        inter_h = np.clip(inter_y2 - inter_y1, 0, None)
+        inter = inter_w * inter_h
+
+        area_a = (ax2 - ax1) * (ay2 - ay1)
+        area_b = (bx2 - bx1) * (by2 - by1)
+        union = area_a[:, None] + area_b[None, :] - inter
+
+        return np.where(union > 0, inter / union, 0.0)
+
+    def plot_canonical_confusion_matrix(self, iou_thr=0.5):
+        df = self.df
+        y_true, y_pred = [], []
+
+        # Group by image to handle matching per-image
         for img in df["image"].unique():
             df_img = df[df["image"] == img]
-            gt = df_img[df_img["gt_class"] != -1]
-            pred = df_img[df_img["pred_class"] != -1]
-            matched_gt = set()
-            matched_pred = set()
 
-            for pi, prow in pred.iterrows():
-                matches = gt[(gt["iou"] >= 0.5) & (~gt.index.isin(matched_gt))]
-                if matches.empty:
+            # 1. Extract Ground Truths (gt_class != -1)
+            gt_rows = df_img[df_img["gt_class"] != -1]
+            g_boxes = gt_rows[["gx1", "gy1", "gx2", "gy2"]].dropna().to_numpy(dtype=np.float32)
+            g_cls = gt_rows["gt_class"].astype(int).to_numpy()
+
+            # 2. Extract Predictions (pred_class != -1)
+            pr_rows = df_img[df_img["pred_class"] != -1]
+            p_boxes = pr_rows[["px1", "py1", "px2", "py2"]].dropna().to_numpy(dtype=np.float32)
+            p_cls = pr_rows["pred_class"].astype(int).to_numpy()
+            p_scr = pr_rows["score"].to_numpy(dtype=np.float32)
+
+            # --- Edge Cases ---
+            if len(g_boxes) == 0:
+                # No GT in image -> All preds are False Positives (Background)
+                for c in p_cls:
                     y_true.append(self.bg_idx)
-                    y_pred.append(prow["pred_class"])
-                    continue
-                best_gt = matches.loc[matches["iou"].idxmax()]
-                matched_gt.add(best_gt.name)
-                matched_pred.add(pi)
-                y_true.append(int(best_gt["gt_class"]))
-                y_pred.append(int(prow["pred_class"]))
+                    y_pred.append(int(c))
+                continue
 
-            for gi in gt.index.difference(matched_gt):
-                y_true.append(int(gt.loc[gi]["gt_class"]))
-                y_pred.append(self.bg_idx)
+            if len(p_boxes) == 0:
+                # No Preds in image -> All GT are False Negatives (Missed)
+                for c in g_cls:
+                    y_true.append(int(c))
+                    y_pred.append(self.bg_idx)
+                continue
 
-            for pi in pred.index.difference(matched_pred):
-                y_true.append(self.bg_idx)
-                y_pred.append(int(pred.loc[pi]["pred_class"]))
+            # --- Greedy Matching ---
+            # Sort preds by confidence (high to low)
+            order = np.argsort(-p_scr)
+            iou = self._iou_matrix(p_boxes, g_boxes)
+            matched_g = set()
 
-        cm = confusion_matrix(y_true, y_pred, labels=list(range(self.bg_idx + 1)))
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=self.class_names + ["background"])
+            for pi in order:
+                gi = int(np.argmax(iou[pi]))
+                # Check threshold and ensure GT hasn't been used yet
+                if iou[pi, gi] >= iou_thr and gi not in matched_g:
+                    # True Positive (or Misclassification between classes)
+                    y_true.append(int(g_cls[gi]))
+                    y_pred.append(int(p_cls[pi]))
+                    matched_g.add(gi)
+                else:
+                    # False Positive (Ghost detection)
+                    y_true.append(self.bg_idx)
+                    y_pred.append(int(p_cls[pi]))
+
+            # --- Handle Missed GT (False Negatives) ---
+            for gi in range(len(g_cls)):
+                if gi not in matched_g:
+                    y_true.append(int(g_cls[gi]))
+                    y_pred.append(self.bg_idx)
+
+        # 3. Save Matrix
+        labels = list(range(self.bg_idx + 1))
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+        # Save as CSV for the table generator
+        cm_df = pd.DataFrame(
+            cm,
+            index=self.class_names + ["background"],
+            columns=self.class_names + ["background"],
+        )
+        cm_csv = os.path.join(self.output_dir, "confusion_matrix_val.csv")
+        cm_df.to_csv(cm_csv)
+
+        # 4. Plot Heatmap
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=cm,
+            display_labels=self.class_names + ["background"]
+        )
         disp.plot(xticks_rotation=45, cmap="Purples", values_format="d")
         plt.title("Canonical Confusion Matrix (Val Eval)")
         plt.tight_layout()
         fig_path = os.path.join(self.output_dir, "confusion_matrix_val.png")
         plt.savefig(fig_path, dpi=300)
         plt.close()
+
         if os.path.exists(fig_path):
             log_image_to_tensorboard(fig_path, "Val/Confusion_Matrix", os.path.join(self.output_dir, "tensorboard"))
 
     def plot_precision_recall_f1_table(self):
-        df = self.df
         cm_path = os.path.join(self.output_dir, "confusion_matrix_val.csv")
-        if not os.path.exists(cm_path):
-            return
+        if os.path.exists(cm_path):
+            try:
+                cm_df = pd.read_csv(cm_path, index_col=0)
+                stats = []
+                for cls in self.class_names:
+                    if cls in cm_df.index and cls in cm_df.columns:
+                        # Diagonal is True Positive
+                        tp = cm_df.loc[cls, cls]
+                        # Sum of Row = All Ground Truths for this class (TP + FN)
+                        total_gt = cm_df.loc[cls].sum()
+                        # Sum of Column = All Predictions for this class (TP + FP)
+                        total_pred = cm_df[cls].sum()
 
-        df_cm = pd.read_csv(cm_path, index_col=0)
-        results = []
-        for i in range(len(self.class_names)):
-            TP = df_cm.iloc[i, i]
-            FP = df_cm.iloc[-1, i]
-            FN = df_cm.iloc[i, -1]
-            precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-            recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-            results.append({"Class": self.class_names[i], "Precision": precision, "Recall": recall, "F1": f1})
+                        precision = tp / total_pred if total_pred > 0 else 0
+                        recall = tp / total_gt if total_gt > 0 else 0
+                        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
 
-        df_results = pd.DataFrame(results)
-        plt.figure(figsize=(10, len(df_results) * 0.6))
-        sns.heatmap(df_results.set_index("Class"), annot=True, fmt=".2f", cmap="Blues", cbar=False)
-        plt.title("Precision / Recall / F1 on Validation")
-        plt.tight_layout()
-        fig_path = os.path.join(self.output_dir, "val_metrics_table.png")
-        plt.savefig(fig_path, dpi=300)
-        plt.close()
-        if os.path.exists(fig_path):
-            log_image_to_tensorboard(fig_path, "Val/F1_Precision_Table", os.path.join(self.output_dir, "tensorboard"))
+                        stats.append(
+                            {"Class": cls, "P": round(precision, 2), "R": round(recall, 2), "F1": round(f1, 2)})
+
+                print("\n=== Derived Performance Metrics ===")
+                df_results = pd.DataFrame(stats)
+                print(df_results)
+
+                # Save plot of table
+                plt.figure(figsize=(10, len(df_results) * 0.6))
+                sns.heatmap(df_results.set_index("Class"), annot=True, fmt=".2f", cmap="Blues", cbar=False)
+                plt.title("Precision / Recall / F1 on Validation")
+                plt.tight_layout()
+                fig_path = os.path.join(self.output_dir, "val_metrics_table.png")
+                plt.savefig(fig_path, dpi=300)
+                plt.close()
+
+                if os.path.exists(fig_path):
+                    log_image_to_tensorboard(fig_path, "Val/F1_Precision_Table",
+                                             os.path.join(self.output_dir, "tensorboard"))
+
+            except Exception as e:
+                print(f"Skipping F1 table: {e}")
 
 
 class EvalHook(HookBase):
@@ -395,10 +487,10 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, nms=0.5, 
     cfg.SOLVER.WARMUP_ITERS = 1000
     # cfg.SOLVER.STEPS = (35000, 42000)
     # cfg.SOLVER.MAX_ITER = 45000
-    cfg.SOLVER.STEPS = (20000, 26000)
-    cfg.SOLVER.MAX_ITER = 30000
-    cfg.SOLVER.GAMMA = 0.1
-    cfg.SOLVER.WEIGHT_DECAY = 0.0001
+    cfg.SOLVER.STEPS = (12000, 16000)
+    cfg.SOLVER.MAX_ITER = 20000
+    # cfg.SOLVER.GAMMA = 0.1
+    # cfg.SOLVER.WEIGHT_DECAY = 0.0001
     cfg.SOLVER.CHECKPOINT_PERIOD = 2000
     cfg.TEST.EVAL_PERIOD = 2000
     cfg.SOLVER.AMP.ENABLED = True
@@ -406,9 +498,11 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, nms=0.5, 
     print(f" FILTER_EMPTY_ANNOTATIONS: {cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS}")
 
     # Input
-    cfg.INPUT.MIN_SIZE_TRAIN = 720  # [640, 768, 896]  # auto den eixe to 896c  = (512,)
-    cfg.INPUT.MAX_SIZE_TRAIN = 1280  # = 512
-    cfg.INPUT.MIN_SIZE_TEST = 640  # = 512
+    # FIX: Set to 1024 to match your tiled data
+    cfg.INPUT.MIN_SIZE_TRAIN = (1024,)
+    cfg.INPUT.MAX_SIZE_TRAIN = 1024
+    cfg.INPUT.MIN_SIZE_TEST = 1024
+    cfg.INPUT.MAX_SIZE_TEST = 1024
     cfg.INPUT.RANDOM_FLIP = "horizontal"
 
     # ROI Head
@@ -422,12 +516,24 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, nms=0.5, 
     cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION = 0.75
     # cfg.MODEL.ROI_BOX_CASCADE_HEAD.IOUS = [0.5, 0.6, 0.7]
 
+    # Replaced 512 with 16 to catch tiny fishing boats
+    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16], [32], [64], [128], [256]]
+    # Added 0.2 (1:5) and 5.0 (5:1) for long Tankers/Subs
+    cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
+
+    cfg.MODEL.RPN.NMS_THRESH = 0.6
+    # cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 8000   # more proposals to not drop tiny ships
+    # cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 1500
+    # cfg.MODEL.RPN.PRE_NMS_TOPK_TEST = 3000
+    # cfg.MODEL.RPN.POST_NMS_TOPK_TEST = 2000
+
+
     cfg.EARLY_STOP = CN()
     cfg.EARLY_STOP.PATIENCE = 4  # We can override this in argparse later if needed
 
     cfg.OUTPUT_DIR = output_dir
     cfg.RARE_CLASS_IDS = [2, 4]
-    cfg.OVERSAMPLE_FACTOR = 1
+    cfg.OVERSAMPLE_FACTOR = 3
     cfg.KEEP_GT_IN_VAL = True  # Retain annotations during val
     cfg.TEST.ENABLE_AIR_EVAL = True  # To skip during long sweeps|mid-evaluation|created a prediction log csv F1 etc
     cfg.TEST.ENABLE_TB_IMAGES = True  # Viz images in TB
@@ -445,7 +551,7 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, nms=0.5, 
         trainer.train()
     except Exception as e:
         if str(e) == "EARLY_STOP":
-            print("✅ Early stopping exit cleanly.")
+            print(" Early stopping exit cleanly.")
         else:
             raise
 
@@ -526,7 +632,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    output_dir = f"./trained_models_Ship_Optical/safe/Optical_sweep_{args.name}"
+    output_dir = f"./trained_models_/superdataset/Optical_sweep_{args.name}"
 
     with open("../json/coco_train.json", 'r') as f:
         data = json.load(f)

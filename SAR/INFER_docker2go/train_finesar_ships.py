@@ -1,6 +1,9 @@
 import os, json, argparse, warnings, logging
 import torch
 import numpy as np
+import pandas as pd
+import seaborn as sns
+
 import matplotlib.pyplot as plt
 from PIL import Image
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
@@ -26,32 +29,47 @@ Image.MAX_IMAGE_PIXELS = 100_000_000
 
 register_datasets()
 
+from detectron2.data import build_detection_train_loader
+
+@classmethod
+def build_train_loader(cls, cfg):
+    return build_detection_train_loader(cfg, mapper=ShipSARMapper(cfg, is_train=True))
 
 class ShipSARMapper(DatasetMapper):
     def __init__(self, cfg, is_train=True):
         super().__init__(cfg, is_train=is_train)
         self.cfg = cfg
         self.is_train = is_train
-        self.augmentations = T.AugmentationList([
-            # T.ResizeShortestEdge(short_edge_length=(640, 768, 896), sample_style="choice"),
-            T.ResizeShortestEdge(short_edge_length=(512, 768, 1024, 1280), sample_style="choice"),
 
-            T.RandomBrightness(0.6, 1.4),
-            T.RandomContrast(0.5, 1.5),
-            T.RandomRotation(angle=[-20, 20]),  # stays axis-aligned
-
-            # T.RandomBrightness(0.75, 1.25),
-            # T.RandomContrast(0.7, 1.3),
-            # T.RandomRotation(angle=[-10, 10]),
-            T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-            T.RandomFlip(prob=0.2, horizontal=False, vertical=True),
-
-        ])
+        if is_train:
+            # TRAIN: strong(er) but reasonable augs
+            self.augmentations = T.AugmentationList([
+                T.ResizeShortestEdge(
+                    short_edge_length=(1024, 1280, 1600),
+                    max_size=cfg.INPUT.MAX_SIZE_TRAIN,
+                    sample_style="choice",
+                ),
+                T.RandomRotation(angle=[-10, 10], sample_style="range"),
+                # T.RandomCrop("relative_range", (0.9, 0.9)),
+                T.RandomBrightness(0.9, 1.1),
+                T.RandomContrast(0.9, 1.1),
+                T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+                T.RandomFlip(prob=0.2, horizontal=False, vertical=True),
+            ])
+        else:
+            # VAL/TEST: deterministic, no random crap
+            self.augmentations = T.AugmentationList([
+                T.ResizeShortestEdge(
+                    short_edge_length=cfg.INPUT.MIN_SIZE_TEST,
+                    max_size=cfg.INPUT.MAX_SIZE_TRAIN,
+                ),
+            ])
 
     def __call__(self, dataset_dict):
         if not self.is_train and not getattr(self.cfg, "KEEP_GT_IN_VAL", False):
             dataset_dict.pop("annotations", None)
         return super().__call__(dataset_dict)
+
 
 
 class MiniAirEvaluator:
@@ -159,14 +177,14 @@ class EvalHook(HookBase):
             csv_name = f"prediction_log_iter{next_iter}.csv"
             csv_path = os.path.join(self.output_dir, csv_name)
 
-            dump_predictions_to_csv(self.model, self.val_loader, csv_path)
-
-            #  Mid-eval visuals/logs
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path)
-                evaluator = MiniAirEvaluator(df, self.output_dir, self.class_names)
-                evaluator.plot_canonical_confusion_matrix()
-                evaluator.plot_precision_recall_f1_table()
+            # dump_predictions_to_csv(self.model, self.val_loader, csv_path)
+            #
+            # #  Mid-eval visuals/logs
+            # if os.path.exists(csv_path):
+            #     df = pd.read_csv(csv_path)
+            #     evaluator = MiniAirEvaluator(df, self.output_dir, self.class_names)
+            #     evaluator.plot_canonical_confusion_matrix()
+            #     evaluator.plot_precision_recall_f1_table()
 
             # Early stopping logic
             if current_ap > self.best_ap:
@@ -196,6 +214,10 @@ class AugmentedTrainer(DefaultTrainer):
         ]
 
     @classmethod
+    def build_train_loader(cls, cfg):
+        return build_detection_train_loader(cfg, mapper=ShipSARMapper(cfg, is_train=True))
+
+    @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         if output_folder is None:
             output_folder = os.path.join(cfg.OUTPUT_DIR, "coco_eval")
@@ -203,32 +225,64 @@ class AugmentedTrainer(DefaultTrainer):
 
     def build_hooks(self):
         hooks = super().build_hooks()
-        val_loader = build_detection_test_loader(self.cfg, self.cfg.DATASETS.TEST[0])
+        val_loader = build_detection_test_loader(
+            self.cfg,
+            self.cfg.DATASETS.TEST[0],
+            mapper=ShipSARMapper(self.cfg, is_train=False),  # deterministic val mapper from above
+        )
         class_names = MetadataCatalog.get(self.cfg.DATASETS.TEST[0]).thing_classes
-        hooks.insert(-1,
-                     EvalHook(
-                         self.cfg.TEST.EVAL_PERIOD,
-                         self.model,
-                         val_loader,
-                         self.cfg.OUTPUT_DIR,
-                         class_names,
-                         self.cfg.EARLY_STOP.PATIENCE
-                     )
-                     )
+        hooks.insert(-1, EvalHook(
+                self.cfg.TEST.EVAL_PERIOD,
+                self.model,
+                val_loader,
+                self.cfg.OUTPUT_DIR,
+                class_names,
+                self.cfg.EARLY_STOP.PATIENCE,
+            ),
+        )
         return hooks
 
 
 def dump_predictions_to_csv(model, data_loader, output_path):
+    """
+    Run inference on the given data_loader and dump a simple
+    GT vs prediction CSV that MiniAirEvaluator expects.
+    This runs the model in eval mode and restores the previous state.
+    """
+    import pandas as pd
+
     rows = []
-    for inputs in data_loader:
-        outputs = model(inputs)
-        for inp, out in zip(inputs, outputs):
-            gt_classes = [x["category_id"] for x in inp.get("annotations", [])]
-            pred_classes = out["instances"].pred_classes.cpu().tolist()
-            for gt, pred in zip(gt_classes, pred_classes):
-                rows.append({"image": inp["file_name"], "gt_class": gt, "pred_class": pred, "iou": 0.0})
+
+    # Remember current mode and switch to eval
+    was_training = model.training
+    model.eval()
+
+    with torch.no_grad():
+        for inputs in data_loader:
+            outputs = model(inputs)
+            for inp, out in zip(inputs, outputs):
+                # keep GT for metrics
+                gt_classes = [x["category_id"] for x in inp.get("annotations", [])]
+                pred_classes = out["instances"].pred_classes.cpu().tolist()
+
+                # NOTE: still using the simple zip logic you had before
+                for gt, pred in zip(gt_classes, pred_classes):
+                    rows.append(
+                        {
+                            "image": inp["file_name"],
+                            "gt_class": gt,
+                            "pred_class": pred,
+                            "iou": 0.0,  # placeholder until we wire proper IoU
+                        }
+                    )
+
+    # Restore model mode
+    if was_training:
+        model.train()
+
     df = pd.DataFrame(rows)
     df.to_csv(output_path, index=False)
+
 
 
 def log_val_predictions_to_tensorboard(cfg, model, data_loader, tb_dir, max_images=5):
@@ -255,26 +309,33 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, score=.5,
     cfg.DATASETS.TRAIN = ("Ships_SAR_train",)
     cfg.DATASETS.TEST = ("Ships_SAR_val",)
     cfg.DATALOADER.NUM_WORKERS = 4
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
+    # cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
+    cfg.MODEL.WEIGHTS = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/SAR_sweep_v5_lr0.0002_b512_nms0.4_score0.4/model_best.pth"
+    # cfg.MODEL.WEIGHTS = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_SAR_sweep_v5_lr0.0002_b512/model_final.pth"finatune
+    # cfg.MODEL.WEIGHTS = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_december/finetune_base_v5_lr0.0002_b512_v2/model_final.pth"
 
     # Core Solver Params
     cfg.SOLVER.IMS_PER_BATCH = 2
     cfg.SOLVER.BASE_LR = lr
-    cfg.SOLVER.MAX_ITER = 3200  # 40000
-    cfg.SOLVER.STEPS = (2200, 2800)  # (24000, 32000)
+    cfg.SOLVER.MAX_ITER = 12000 #  FT3200  #VAN40000
+    cfg.SOLVER.STEPS = (8000, 10000) # (1200, 1600)  # (24000, 32000)
     cfg.SOLVER.GAMMA = 0.1
     cfg.SOLVER.WEIGHT_DECAY = 0.0001  # 0.00005
-    cfg.SOLVER.CHECKPOINT_PERIOD = 4000
-    cfg.TEST.EVAL_PERIOD = 4000
+    cfg.SOLVER.CHECKPOINT_PERIOD = 2000
+    cfg.TEST.EVAL_PERIOD = 5000
     cfg.SOLVER.AMP.ENABLED = True
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = False
     print(f"🧪 FILTER_EMPTY_ANNOTATIONS: {cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS}")
 
     # Input
-    cfg.INPUT.MIN_SIZE_TRAIN = [640, 768, 896]
+    cfg.INPUT.MIN_SIZE_TRAIN = [800, 1280, 1280]
     cfg.INPUT.MAX_SIZE_TRAIN = 1920
-    cfg.INPUT.MIN_SIZE_TEST = 640
-
+    cfg.INPUT.MIN_SIZE_TEST = 800
+    #finetune
+    # cfg.INPUT.MIN_SIZE_TRAIN = [640, 768, 896]
+    # cfg.INPUT.MAX_SIZE_TRAIN = 1920
+    # cfg.INPUT.MIN_SIZE_TEST = 640
+    #benchmarkdataset
     # cfg.INPUT.MIN_SIZE_TRAIN = [640, 768, 896]
     # cfg.INPUT.MAX_SIZE_TRAIN = 1920
     # cfg.INPUT.MIN_SIZE_TEST = 640
@@ -289,11 +350,11 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, score=.5,
     # Anchor Generator
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 16, 32], [32, 64, 128], [64, 128, 256], [128, 256, 512], [256, 512]]
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.25, 0.5, 1.0, 2.0, 3.5]] * 5
-    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 32], [32, 64], [64, 128], [128, 256], [256, 512]]
-    cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.25, 0.5, 1.0, 2.0, 4.0]] * 5
+    # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 32], [32, 64], [64, 128], [128, 256], [256, 512]]
+    # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.25, 0.5, 1.0, 2.0, 4.0]] * 5
 
     # RPN
-    cfg.MODEL.RPN.POSITIVE_FRACTION = 0.3
+    cfg.MODEL.RPN.POSITIVE_FRACTION = 0.5
     cfg.MODEL.RPN.BATCH_SIZE_PER_IMAGE = 256
 
     cfg.EARLY_STOP = CN()
@@ -304,7 +365,7 @@ def setup_and_train(output_dir, num_classes, lr=0.0001, roi_batch=512, score=.5,
     os.makedirs(output_dir, exist_ok=True)
 
     logText(cfg, cfg.OUTPUT_DIR)
-    cfg.MODEL.WEIGHTS = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/SAR_sweep_v5_lr0.0002_b512_nms0.4_score0.4/model_best.pth"
+
     trainer = AugmentedTrainer(cfg)
     trainer.resume_or_load(resume=True)
 
@@ -348,13 +409,13 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.0001, help="Base learning rate")
     parser.add_argument("--batch", type=int, default=512, help="ROI-batch size per image")
     parser.add_argument("--name", type=str, default="default", help="Sweep run name")
-    parser.add_argument("--nms", type=float, default=0.4, help="ROI-NMS Threshold")
+    parser.add_argument("--nms", type=float, default=0.5, help="ROI-NMS Threshold")
     parser.add_argument("--score", type=float, default=0.4, help="ROI-Score Threshold")
 
     args = parser.parse_args()
 
     # output_dir = f"./trained_models_SAR/SAR_sweep_{args.name}"
-    output_dir = f"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_SAR_sweep_v5_lr0.0002_b512/"
+    output_dir = f"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_december_800x800/SAR_sweep_v5_lr0.0002_b512_/"
     # output_dir = f"./trained_models_SAR/SAR_sweep_{args.name}"
     json_path = "./json/coco_train.json"
     with open(json_path, 'r') as f:
