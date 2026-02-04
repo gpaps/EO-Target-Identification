@@ -520,7 +520,7 @@ def setup_and_train(output_dir, num_classes, args):
     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = args.nms
 
     cfg.EARLY_STOP = CN()
-    cfg.EARLY_STOP.PATIENCE = 5
+    cfg.EARLY_STOP.PATIENCE = 3
     cfg.OUTPUT_DIR = output_dir
     cfg.RARE_CLASS_IDS = [2, 4]
     cfg.OVERSAMPLE_FACTOR = 4
