@@ -65,7 +65,7 @@ class ClassAwareMapper(DatasetMapper):
             # Only Rotation. No texture destruction.
             T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
         ]
-        self.target_class_ids = [2, 4]
+        self.target_class_ids = [2, 3, 4]
 
     def __call__(self, dataset_dict):
         # Validation Logic (Keep GT for Eval)
@@ -241,7 +241,7 @@ def setup_and_train(output_dir, num_classes, args):
 
     # --- 4. DENSE RPN UPGRADE (The New Strategy) ---
     # A. Anchors: Interleaved sizes to catch "In-Between" Recreational boats
-    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256,384]]
+    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256, 384]]
     cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
 
     # B. High Batch Size: Force model to classify hard background
