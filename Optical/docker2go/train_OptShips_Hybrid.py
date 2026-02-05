@@ -60,6 +60,9 @@ class ClassAwareMapper(DatasetMapper):
             T.ResizeShortestEdge(short_edge_length=(900, 1000, 1100, 1200), max_size=1333, sample_style="choice"),
             T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
             T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+            T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.3),  # Simulates Haze
+            T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.3),  # Simulates Sun/Cloud
+            T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),  # Simulates "Pale" Sensor
         ]
         self.extra_aug = [
             # Only Rotation. No texture destruction.
