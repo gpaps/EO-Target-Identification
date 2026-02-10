@@ -153,7 +153,6 @@ def plot_loss_curves(output_dir):
         print(f"[Warn] No metrics.json found at {json_path}")
         return
 
-    # Read the JSON line by line
     data = []
     with open(json_path, 'r') as f:
         for line in f:
@@ -163,18 +162,13 @@ def plot_loss_curves(output_dir):
                 pass
 
     df = pd.DataFrame(data)
-
-    # Filter for rows that actually contain training loss
     if 'total_loss' not in df.columns:
         print("[Warn] metrics.json does not contain 'total_loss'.")
         return
 
     df_train = df[df['total_loss'].notna()]
-
-    # Define the losses we want to visualize
     metrics = ['total_loss', 'loss_cls', 'loss_box_reg', 'loss_rpn_cls', 'loss_rpn_loc']
 
-    # Create a nice 2x3 Grid
     sns.set_theme(style="whitegrid")
     fig, axes = plt.subplots(2, 3, figsize=(20, 10))
     fig.suptitle(f"Training Loss Summary: {os.path.basename(output_dir)}", fontsize=16)
@@ -182,20 +176,15 @@ def plot_loss_curves(output_dir):
 
     for i, metric in enumerate(metrics):
         if metric in df_train.columns:
-            # Plot the raw data with transparency
-            sns.lineplot(data=df_train, x='iteration', y=metric, ax=axes[i], alpha=0.3, color='blue',
-                         label='Raw')
-            # Plot a smoothed trend line (Moving Average)
+            sns.lineplot(data=df_train, x='iteration', y=metric, ax=axes[i], alpha=0.3, color='blue', label='Raw')
             df_train[f'{metric}_smooth'] = df_train[metric].rolling(window=50).mean()
-            sns.lineplot(data=df_train, x='iteration', y=f'{metric}_smooth', ax=axes[i], linewidth=2,
-                         color='red', label='Smoothed (MA50)')
-
+            sns.lineplot(data=df_train, x='iteration', y=f'{metric}_smooth', ax=axes[i], linewidth=2, color='red',
+                         label='Smoothed (MA50)')
             axes[i].set_title(metric.replace('_', ' ').upper(), fontsize=12)
             axes[i].set_xlabel("Iteration")
             axes[i].set_ylabel("Loss")
             axes[i].legend()
 
-    # Delete unused subplot (since we have 5 plots in a grid of 6)
     if len(metrics) < 6:
         fig.delaxes(axes[5])
 
