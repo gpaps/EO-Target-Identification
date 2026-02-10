@@ -8,7 +8,6 @@ class ClassAwareMapper(DatasetMapper):
         super().__init__(cfg, is_train=is_train)
         self.cfg = cfg
 
-        # 1. STANDARD AUG
         self.standard_aug = [
             T.ResizeShortestEdge(short_edge_length=(900, 1000, 1100, 1200), max_size=1333, sample_style="choice"),
             T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
@@ -18,7 +17,6 @@ class ClassAwareMapper(DatasetMapper):
             T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),
         ]
 
-        # 2. EXTRA AUG
         self.extra_aug = [
             T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
         ]

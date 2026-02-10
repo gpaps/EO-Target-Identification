@@ -86,14 +86,16 @@ def run_final_analysis(cfg, model):
         print("[1/4] Generating Loss Plots...")
         plot_loss_curves(cfg.OUTPUT_DIR)
 
-        # 2. Class Distribution Heatmap (NEW)
+        # 2. Class Distribution Heatmap
         print("[2/4] Generating Class Distribution Heatmap...")
-        csv_log_path = os.path.join(cfg.OUTPUT_DIR, "class_distribution.csv")
-        # Check if BalancedSampler generated the CSV
+
+        # FIX: Changed filename to match what BalancedSampler produces
+        csv_log_path = os.path.join(cfg.OUTPUT_DIR, "batch_class_distribution.csv")
+
         if os.path.exists(csv_log_path):
             generate_class_distribution_heatmap(csv_log_path, cfg.OUTPUT_DIR)
         else:
-            print(f"[Warn] Class distribution CSV not found at {csv_log_path}. Skipping heatmap.")
+            print(f"[Warn] CSV not found at {csv_log_path}. Skipping heatmap.")
 
         # 3. Validation Inference
         print("[3/4] Running Inference for Analysis (Threshold=0.05)...")
