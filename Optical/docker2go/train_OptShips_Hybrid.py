@@ -1,46 +1,32 @@
-import os, json, warnings, argparse, torch, random
+import os, json, warnings, argparse, torch
 from datetime import datetime
-import numpy as np
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-from PIL import Image
-from io import BytesIO
-
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from detectron2.config import get_cfg
-from detectron2.data import transforms as T
-from detectron2.engine import DefaultTrainer, HookBase
-from detectron2.data import DatasetMapper, build_detection_train_loader, build_detection_test_loader, MetadataCatalog, \
+from detectron2.engine import DefaultTrainer
+from detectron2.data import build_detection_train_loader, build_detection_test_loader, MetadataCatalog, \
     DatasetFromList, MapDataset
 from detectron2.data import get_detection_dataset_dicts
 from detectron2 import model_zoo
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
-from detectron2.utils.events import CommonMetricPrinter, JSONWriter, TensorboardXWriter
-from detectron2.utils.visualizer import Visualizer
-from torch.utils.tensorboard import SummaryWriter
 from detectron2.checkpoint import DetectionCheckpointer
 import torch.backends.cudnn as cudnn
 
-# Custom Import (Ensure these files exist in your folder)
-from utils.generate_heatmap import generate_class_distribution_heatmap
-from utils.tensorboard_utils import log_image_to_tensorboard, logText
+# --- CUSTOM IMPORTS (Clean!) ---
+from utils.tensorboard_utils import logText
 from samplers.balanced_sampler import BalancedSampler
 from register_Ship_dataset import register_datasets
-
+# NEW IMPORTS
+from utils.mappers import ClassAwareMapper
+# Update this line to include plot_loss_curves
+from utils.evaluation_utils import EvalHook, MiniAirEvaluator, dump_predictions_to_csv, plot_loss_curves
 from yacs.config import CfgNode as CN
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
-Image.MAX_IMAGE_PIXELS = 100_000_000
 
 # 1. OPTIMIZATION
 cudnn.benchmark = True
 register_datasets()
 
-
-# 2. SAFETY UTIL
 def prepare_output_dir(output_dir, force=False):
     if os.path.exists(output_dir) and not force:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -48,59 +34,6 @@ def prepare_output_dir(output_dir, force=False):
         print(f"[I/O] Output directory exists. Switching to: {new_dir}")
         return new_dir
     return output_dir
-
-
-# 3. CLASS AWARE MAPPER (Resolution Normalization + Atmospheric Aug)
-class ClassAwareMapper(DatasetMapper):
-    def __init__(self, cfg, is_train=True):
-        super().__init__(cfg, is_train=is_train)
-        self.cfg = cfg
-
-        # 1. STANDARD AUG (Applies to EVERY class: Commercial, Military, etc.)
-        self.standard_aug = [
-            # SCALING: Keep the winning strategy
-            T.ResizeShortestEdge(short_edge_length=(900, 1000, 1100, 1200), max_size=1333, sample_style="choice"),
-
-            # GEOMETRY: Basic flips
-            T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-            T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-
-            # ATMOSPHERIC SIMULATION (The "Pale/Haze" Fix)
-            T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.3),  # Haze
-            T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.3),  # Sun/Cloud
-            T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),  # Pale Sensor
-        ]
-
-        # 2. EXTRA AUG (Targeted Geometry)
-        self.extra_aug = [
-            # Rotation is crucial for small boats (Fishing/Rec) that don't align to docks.
-            T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
-        ]
-
-        # 3. TARGETS (Commercial, Rec, Fishing, Sub)
-        self.target_class_ids = [0, 2, 3, 4]
-
-    def __call__(self, dataset_dict):
-        if not self.is_train:
-            dataset_dict.pop("annotations", None)
-            self.tfm_gens = [T.ResizeShortestEdge(short_edge_length=(1000, 1000), max_size=1333, sample_style="choice")]
-            return super().__call__(dataset_dict)
-
-        # Training Logic
-        annos = dataset_dict.get("annotations", [])
-        has_target = any(obj["category_id"] in self.target_class_ids for obj in annos)
-        aug_list = self.standard_aug + self.extra_aug if has_target else self.standard_aug
-        self.tfm_gens = aug_list
-
-        try:
-            return super().__call__(dataset_dict)
-        except ValueError as e:
-            if len(annos) == 0:
-                dataset_dict["instances"] = []
-                return dataset_dict
-            else:
-                return None
-
 
 class AugmentedTrainer(DefaultTrainer):
     @classmethod
@@ -129,58 +62,15 @@ class AugmentedTrainer(DefaultTrainer):
 
     @classmethod
     def build_train_loader(cls, cfg):
-        dataset_dicts = get_detection_dataset_dicts(cfg.DATASETS.TRAIN,
-                                                    filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS)
+        dataset_dicts = get_detection_dataset_dicts(cfg.DATASETS.TRAIN, filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS)
         dataset = MapDataset(DatasetFromList(dataset_dicts, copy=False), ClassAwareMapper(cfg, is_train=True))
         return torch.utils.data.DataLoader(
             dataset,
             batch_size=cfg.SOLVER.IMS_PER_BATCH,
-            sampler=BalancedSampler(dataset, dataset_dicts, cfg.SOLVER.IMS_PER_BATCH, cfg,
-                                    oversample_factor=cfg.get("OVERSAMPLE_FACTOR", 1)),
+            sampler=BalancedSampler(dataset, dataset_dicts, cfg.SOLVER.IMS_PER_BATCH, cfg, oversample_factor=cfg.get("OVERSAMPLE_FACTOR", 1)),
             num_workers=cfg.DATALOADER.NUM_WORKERS,
             collate_fn=lambda x: x
         )
-
-
-# --- EVALUATION CLASSES ---
-class EvalHook(HookBase):
-    def __init__(self, eval_period, model, val_loader, output_dir, class_names, patience):
-        self._period = eval_period
-        self.model = model
-        self.val_loader = val_loader
-        self.output_dir = output_dir
-        self.class_names = class_names
-        self.patience = patience
-        self.best_ap = -1
-        self.counter = 0
-
-    def after_step(self):
-        next_iter = self.trainer.iter + 1
-        is_final = next_iter == self.trainer.max_iter
-        if next_iter % self._period == 0 or is_final:
-            results = inference_on_dataset(
-                self.model,
-                self.val_loader,
-                COCOEvaluator(self.trainer.cfg.DATASETS.TEST[0], self.trainer.cfg, False, self.output_dir)
-            )
-            print(f"[EvalHook] Eval results at iter {next_iter}: {results}")
-            current_ap = results.get("bbox", {}).get("AP", -1)
-
-            if current_ap > self.best_ap:
-                self.best_ap = current_ap
-                self.counter = 0
-                checkpointer = DetectionCheckpointer(self.model, self.output_dir)
-                checkpointer.save("model_best")
-            else:
-                self.counter += 1
-                print(f"[EarlyStopping] No improvement. Counter: {self.counter}/{self.patience}")
-
-            if self.counter >= self.patience:
-                print(" Early stopping triggered.")
-                self.trainer.storage.put_scalars(early_stop_iter=next_iter)
-                raise Exception("EARLY_STOP")
-
-
 # ---------------------------------------------------------
 # The Setup Function (DCN + CIoU + Dense RPN)
 # ---------------------------------------------------------
@@ -283,11 +173,31 @@ def setup_and_train(output_dir, num_classes, args):
         else:
             raise
 
-    # Final Eval
-    val_loader = build_detection_test_loader(cfg, cfg.DATASETS.TEST[0], mapper=ClassAwareMapper(cfg, is_train=False))
-    evaluator = COCOEvaluator(cfg.DATASETS.TEST[0], cfg, False, cfg.OUTPUT_DIR)
-    inference_on_dataset(trainer.model, val_loader, evaluator)
+        # --- POST-PROCESSING ---
+        print("\n[Post-Processing] Generating Final Artifacts...")
+        checkpointer = DetectionCheckpointer(trainer.model, cfg.OUTPUT_DIR)
+        best_path = os.path.join(cfg.OUTPUT_DIR, "model_best.pth")
+        if os.path.exists(best_path):
+            checkpointer.load(best_path)
+        else:
+            print("[WARN] model_best.pth not found! Using current weights.")
 
+        csv_path = os.path.join(cfg.OUTPUT_DIR, "prediction_log_final.csv")
+        val_loader = build_detection_test_loader(cfg, cfg.DATASETS.TEST[0],
+                                                 mapper=ClassAwareMapper(cfg, is_train=False))
+
+        try:
+            df_preds = dump_predictions_to_csv(trainer.model, val_loader, csv_path)
+            class_names = MetadataCatalog.get(cfg.DATASETS.TEST[0]).thing_classes
+            mini_eval = MiniAirEvaluator(df_preds, cfg.OUTPUT_DIR, class_names)
+            mini_eval.plot_confusion_matrix()
+
+            print("[Post-Processing] Plotting Loss Curves...")
+            plot_loss_curves(cfg.OUTPUT_DIR)
+
+            print("✅ Analysis Complete.")
+        except Exception as e:
+            print(f"[Error] Post-processing failed: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
