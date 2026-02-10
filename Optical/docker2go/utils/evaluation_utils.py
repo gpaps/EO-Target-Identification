@@ -12,10 +12,6 @@ from detectron2.data import MetadataCatalog, build_detection_test_loader
 
 
 class MiniAirEvaluator:
-    """
-    Calculates Precision, Recall, and Generates Confusion Matrix
-    """
-
     def __init__(self, df, output_dir, class_names):
         self.df = df.copy()
         self.output_dir = output_dir
@@ -23,6 +19,9 @@ class MiniAirEvaluator:
         self.bg_idx = len(class_names)
 
     def compute_metrics(self):
+        if self.df.empty:
+            return pd.DataFrame()
+
         gt_df = self.df[self.df['gt_class'] != -1]
         results = {}
         for cls_id, cls_name in enumerate(self.class_names):
@@ -34,22 +33,57 @@ class MiniAirEvaluator:
         return pd.DataFrame(results).T
 
     def plot_confusion_matrix(self):
-        y_true = self.df['gt_class'].values
-        y_pred = self.df['pred_class'].values
-        y_pred[y_pred == -1] = self.bg_idx
-        y_true[y_true == -1] = self.bg_idx
+        try:
+            if self.df.empty:
+                print("[Warn] DataFrame is empty. Skipping Confusion Matrix.")
+                return
 
-        labels = self.class_names + ["Background"]
-        cm = confusion_matrix(y_true, y_pred, labels=range(len(labels)))
+            y_true = self.df['gt_class'].values
+            y_pred = self.df['pred_class'].values
 
-        fig, ax = plt.subplots(figsize=(10, 8))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
-        plt.ylabel('Ground Truth')
-        plt.xlabel('Prediction')
-        plt.title('Confusion Matrix (Validation)')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, "confusion_matrix.png"))
-        plt.close()
+            # Safety: Handle cases where no predictions exist
+            y_pred[y_pred == -1] = self.bg_idx
+            y_true[y_true == -1] = self.bg_idx
+
+            labels = self.class_names + ["Background"]
+            cm = confusion_matrix(y_true, y_pred, labels=range(len(labels)))
+
+            fig, ax = plt.subplots(figsize=(10, 8))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+            plt.ylabel('Ground Truth')
+            plt.xlabel('Prediction')
+            plt.title('Confusion Matrix (Validation)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, "confusion_matrix.png"))
+            plt.close()
+            print("✅ Confusion Matrix saved.")
+        except Exception as e:
+            print(f"❌ Failed to plot Confusion Matrix: {e}")
+
+    def save_metrics_table(self):
+        try:
+            df = self.compute_metrics()
+            if df.empty:
+                print("[Warn] Metrics DF empty. Skipping table.")
+                return
+
+            df.to_csv(os.path.join(self.output_dir, "val_metrics.csv"))
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.axis('tight')
+            ax.axis('off')
+            table = ax.table(cellText=df.values.round(3), colLabels=df.columns, rowLabels=df.index, loc='center',
+                             cellLoc='center')
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1.2, 1.2)
+
+            plt.title("Validation Metrics Per Class", weight='bold')
+            plt.savefig(os.path.join(self.output_dir, "val_metrics_table.png"), bbox_inches='tight', dpi=150)
+            plt.close()
+            print("✅ Validation Metrics Table saved.")
+        except Exception as e:
+            print(f"❌ Failed to save metrics table: {e}")
 
 
 def dump_predictions_to_csv(model, data_loader, output_path):
@@ -71,6 +105,7 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                 pred_classes = pred_instances.pred_classes.cpu().numpy()
                 scores = pred_instances.scores.cpu().numpy()
 
+                # If there are GT objects, we try to match them
                 if len(gt_classes) > 0:
                     for i, gt_cls in enumerate(gt_classes):
                         best_iou = 0
@@ -78,6 +113,7 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                         best_score = 0
                         gt_box = gt_boxes[i]
 
+                        # Try to find a match among predictions
                         for j, pred_box in enumerate(pred_boxes):
                             xA = max(gt_box[0], pred_box[0])
                             yA = max(gt_box[1], pred_box[1])
@@ -93,16 +129,23 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                                 best_match_cls = pred_classes[j]
                                 best_score = scores[j]
 
+                        # Append result (Even if NO MATCH found, so we log the Miss)
                         results.append({
                             "image": os.path.basename(img_name),
                             "gt_class": int(gt_cls),
-                            "pred_class": int(best_match_cls),
+                            "pred_class": int(best_match_cls),  # -1 if missed
                             "score": float(best_score),
                             "iou": float(best_iou)
                         })
+                elif len(pred_boxes) > 0:
+                    # Log False Positives on empty images (optional, skipped to keep CSV clean for now)
+                    pass
 
     df = pd.DataFrame(results)
-    df.to_csv(output_path, index=False)
+    if not df.empty:
+        df.to_csv(output_path, index=False)
+    else:
+        print("[Warn] No predictions/GT matches found to log.")
     return df
 
 
@@ -129,6 +172,10 @@ class EvalHook(HookBase):
             print(f"[EvalHook] Eval results at iter {next_iter}: {results}")
             current_ap = results.get("bbox", {}).get("AP", -1)
 
+            # Handle NaN AP (happens in early training)
+            if str(current_ap) == 'nan':
+                current_ap = 0.0
+
             if current_ap > self.best_ap:
                 self.best_ap = current_ap
                 self.counter = 0
@@ -145,51 +192,56 @@ class EvalHook(HookBase):
 
 
 def plot_loss_curves(output_dir):
-    """
-    Reads metrics.json and saves a grid plot of all losses to 'training_loss_summary.png'.
-    """
-    json_path = os.path.join(output_dir, "metrics.json")
-    if not os.path.exists(json_path):
-        print(f"[Warn] No metrics.json found at {json_path}")
-        return
+    try:
+        json_path = os.path.join(output_dir, "metrics.json")
+        if not os.path.exists(json_path):
+            print(f"[Warn] No metrics.json found at {json_path}")
+            return
 
-    data = []
-    with open(json_path, 'r') as f:
-        for line in f:
-            try:
-                data.append(json.loads(line))
-            except:
-                pass
+        data = []
+        with open(json_path, 'r') as f:
+            for line in f:
+                try:
+                    data.append(json.loads(line))
+                except:
+                    pass
 
-    df = pd.DataFrame(data)
-    if 'total_loss' not in df.columns:
-        print("[Warn] metrics.json does not contain 'total_loss'.")
-        return
+        df = pd.DataFrame(data)
+        if 'total_loss' not in df.columns:
+            print("[Warn] metrics.json does not contain 'total_loss'.")
+            return
 
-    df_train = df[df['total_loss'].notna()]
-    metrics = ['total_loss', 'loss_cls', 'loss_box_reg', 'loss_rpn_cls', 'loss_rpn_loc']
+        # FIX: Use .copy() to avoid SettingWithCopyWarning
+        df_train = df[df['total_loss'].notna()].copy()
+        metrics = ['total_loss', 'loss_cls', 'loss_box_reg', 'loss_rpn_cls', 'loss_rpn_loc']
 
-    sns.set_theme(style="whitegrid")
-    fig, axes = plt.subplots(2, 3, figsize=(20, 10))
-    fig.suptitle(f"Training Loss Summary: {os.path.basename(output_dir)}", fontsize=16)
-    axes = axes.flatten()
+        sns.set_theme(style="whitegrid")
+        fig, axes = plt.subplots(2, 3, figsize=(20, 10))
+        fig.suptitle(f"Training Loss Summary: {os.path.basename(output_dir)}", fontsize=16)
+        axes = axes.flatten()
 
-    for i, metric in enumerate(metrics):
-        if metric in df_train.columns:
-            sns.lineplot(data=df_train, x='iteration', y=metric, ax=axes[i], alpha=0.3, color='blue', label='Raw')
-            df_train[f'{metric}_smooth'] = df_train[metric].rolling(window=50).mean()
-            sns.lineplot(data=df_train, x='iteration', y=f'{metric}_smooth', ax=axes[i], linewidth=2, color='red',
-                         label='Smoothed (MA50)')
-            axes[i].set_title(metric.replace('_', ' ').upper(), fontsize=12)
-            axes[i].set_xlabel("Iteration")
-            axes[i].set_ylabel("Loss")
-            axes[i].legend()
+        for i, metric in enumerate(metrics):
+            if metric in df_train.columns:
+                sns.lineplot(data=df_train, x='iteration', y=metric, ax=axes[i], alpha=0.3, color='blue', label='Raw')
+                # FIX: Check if we have enough data to smooth
+                if len(df_train) > 5:
+                    window = min(50, len(df_train) // 2)
+                    df_train[f'{metric}_smooth'] = df_train[metric].rolling(window=window).mean()
+                    sns.lineplot(data=df_train, x='iteration', y=f'{metric}_smooth', ax=axes[i], linewidth=2,
+                                 color='red', label=f'Smoothed (MA{window})')
 
-    if len(metrics) < 6:
-        fig.delaxes(axes[5])
+                axes[i].set_title(metric.replace('_', ' ').upper(), fontsize=12)
+                axes[i].set_xlabel("Iteration")
+                axes[i].set_ylabel("Loss")
+                axes[i].legend()
 
-    plt.tight_layout()
-    save_path = os.path.join(output_dir, "training_loss_summary.png")
-    plt.savefig(save_path, dpi=150)
-    plt.close()
-    print(f"✅ Loss Summary Plot saved to {save_path}")
+        if len(metrics) < 6:
+            fig.delaxes(axes[5])
+
+        plt.tight_layout()
+        save_path = os.path.join(output_dir, "training_loss_summary.png")
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+        print(f"✅ Loss Summary Plot saved to {save_path}")
+    except Exception as e:
+        print(f"❌ Failed to plot loss curves: {e}")
