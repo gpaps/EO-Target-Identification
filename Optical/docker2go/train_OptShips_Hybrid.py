@@ -50,38 +50,37 @@ def prepare_output_dir(output_dir, force=False):
     return output_dir
 
 
-# 3. CLASS AWARE MAPPER (Resolution Normalization Strategy)
+# 3. CLASS AWARE MAPPER (Resolution Normalization + Atmospheric Aug)
 class ClassAwareMapper(DatasetMapper):
     def __init__(self, cfg, is_train=True):
         super().__init__(cfg, is_train=is_train)
         self.cfg = cfg
+
+        # 1. STANDARD AUG (Applies to EVERY class: Commercial, Military, etc.)
         self.standard_aug = [
-            # SCALING STRATEGY: 900-1200px (The "Sweet Spot" from our analysis)
+            # SCALING: Keep the winning strategy
             T.ResizeShortestEdge(short_edge_length=(900, 1000, 1100, 1200), max_size=1333, sample_style="choice"),
+
+            # GEOMETRY: Basic flips
             T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
             T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-            T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.3),  # Simulates Haze
-            T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.3),  # Simulates Sun/Cloud
-            T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),  # Simulates "Pale" Sensor
+
+            # ATMOSPHERIC SIMULATION (The "Pale/Haze" Fix)
+            T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.3),  # Haze
+            T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.3),  # Sun/Cloud
+            T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),  # Pale Sensor
         ]
+
+        # 2. EXTRA AUG (Targeted Geometry)
         self.extra_aug = [
-            # Only Rotation. No texture destruction.
+            # Rotation is crucial for small boats (Fishing/Rec) that don't align to docks.
             T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
         ]
-        self.target_class_ids = [2, 3, 4]
+
+        # 3. TARGETS (Commercial, Rec, Fishing, Sub)
+        self.target_class_ids = [0, 2, 3, 4]
 
     def __call__(self, dataset_dict):
-        # Validation Logic (Keep GT for Eval)
-        if not self.is_train and getattr(self.cfg, "KEEP_GT_IN_VAL", False):
-            self.is_train = True
-            # Validate at 1000px to match training "eye"
-            self.tfm_gens = [T.ResizeShortestEdge(short_edge_length=(1000, 1000), max_size=1333, sample_style="choice")]
-            try:
-                ret = super().__call__(dataset_dict)
-            finally:
-                self.is_train = False
-            return ret
-
         if not self.is_train:
             dataset_dict.pop("annotations", None)
             self.tfm_gens = [T.ResizeShortestEdge(short_edge_length=(1000, 1000), max_size=1333, sample_style="choice")]
@@ -143,24 +142,7 @@ class AugmentedTrainer(DefaultTrainer):
         )
 
 
-# [Keeping your MiniAirEvaluator / EvalHook / dump_predictions_to_csv as is]
-# ... (Paste your Eval classes here or ensure they are imported) ...
-# To save space, I assume the Eval classes are identical to previous script.
-# IF YOU NEED THEM RE-PASTED, LET ME KNOW.
-
-# --- EVALUATION CLASSES (Condensed for execution) ---
-class MiniAirEvaluator:
-    def __init__(self, df, output_dir, class_names):
-        self.df = df.copy()
-        self.output_dir = output_dir
-        self.class_names = class_names
-        self.bg_idx = len(class_names)
-
-    # ... (Standard logic) ...
-    def plot_canonical_confusion_matrix(self, iou_thr=0.5):
-        pass  # Placeholder: Ensure you have the full class definition from previous files
-
-
+# --- EVALUATION CLASSES ---
 class EvalHook(HookBase):
     def __init__(self, eval_period, model, val_loader, output_dir, class_names, patience):
         self._period = eval_period
@@ -199,17 +181,13 @@ class EvalHook(HookBase):
                 raise Exception("EARLY_STOP")
 
 
-def dump_predictions_to_csv(model, data_loader, output_path):
-    pass  # Placeholder
-
-
 # ---------------------------------------------------------
-# The Setup Function (Dense RPN Strategy)
+# The Setup Function (DCN + CIoU + Dense RPN)
 # ---------------------------------------------------------
 def setup_and_train(output_dir, num_classes, args):
     cfg = get_cfg()
 
-    # --- 1. ARCHITECTURE ---
+    # 1. ARCHITECTURE
     if args.backbone == "r101":
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml"))
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml")
@@ -217,11 +195,19 @@ def setup_and_train(output_dir, num_classes, args):
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
 
+    # --- ARCHITECTURE UPGRADE: DEFORMABLE CONV (DCNv2) ---
+    # This enables the model to "deform" its receptive field to catch VAGUE shapes (Tugs/Barges).
+    # Applied to the last 3 stages (Res3, Res4, Res5).
+    cfg.MODEL.RESNETS.DEFORM_ON_PER_STAGE = [False, True, True, True]
+    cfg.MODEL.RESNETS.DEFORM_MODULATED = True  # Use DCNv2 (Better than v1)
+    cfg.MODEL.RESNETS.NUM_GROUPS = 1
+    # -----------------------------------------------------
+
     cfg.DATASETS.TRAIN = ("Ship_Optical_train",)
     cfg.DATASETS.TEST = ("Ship_Optical_val",)
     cfg.DATALOADER.NUM_WORKERS = 16
 
-    # --- 2. SOLVER ---
+    # 2. SOLVER
     cfg.SOLVER.IMS_PER_BATCH = args.batch
     cfg.SOLVER.BASE_LR = args.lr
     cfg.SOLVER.MAX_ITER = args.base_iters
@@ -235,39 +221,50 @@ def setup_and_train(output_dir, num_classes, args):
     cfg.TEST.EVAL_PERIOD = period
     cfg.SOLVER.AMP.ENABLED = True
 
-    # --- 3. INPUT (Resolution Normalization) ---
+    # SAFETY: Clip gradients to prevent DCN/CIoU explosion
+    cfg.SOLVER.CLIP_GRADIENTS.ENABLED = True
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE = "value"
+    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0
+
+    # 3. INPUT (Resolution Normalization)
     cfg.INPUT.MIN_SIZE_TRAIN = (900, 1000, 1100, 1200)
     cfg.INPUT.MAX_SIZE_TRAIN = 1333
     cfg.INPUT.MIN_SIZE_TEST = 1000
     cfg.INPUT.MAX_SIZE_TEST = 1333
     cfg.INPUT.RANDOM_FLIP = "none"
 
-    # --- 4. DENSE RPN UPGRADE (The New Strategy) ---
-    # A. Anchors: Interleaved sizes to catch "In-Between" Recreational boats
+    # 4. DENSE RPN UPGRADE
     cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256, 384]]
     cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
-
-    # B. High Batch Size: Force model to classify hard background
     cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 1024
     cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION = 0.33
-
-    # C. NMS: Keep 0.8 to preserve crowded ships (0.7 kills neighbors!)
     cfg.MODEL.RPN.NMS_THRESH = 0.8
     cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 6000
     cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000
-    # -----------------------------------------------
 
     cfg.MODEL.ROI_HEADS.NAME = "StandardROIHeads"
-    cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = True
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.score
     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = args.nms
 
+    # --- LOSS UPGRADE: CIoU ---
+    # Replaces SmoothL1. Forces small boxes to align perfectly.
+    # CIoU = Overlap + Center Distance + Aspect Ratio.
+    cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_LOSS_TYPE = "ciou"
+    # --------------------------
+
     cfg.EARLY_STOP = CN()
-    cfg.EARLY_STOP.PATIENCE = 3
+    cfg.EARLY_STOP.PATIENCE = 10  # Increased patience for DCN convergence
     cfg.OUTPUT_DIR = output_dir
-    cfg.RARE_CLASS_IDS = [2, 4]
+
+    # 5. DATASET FIXES
+    # Force inclusion of Background images (Fixes False Positives on Land)
+    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = False
+
+    # Force diverse sampling of Commercial (0), Fishing (2), Sub (4)
+    cfg.RARE_CLASS_IDS = [0, 2, 4]
     cfg.OVERSAMPLE_FACTOR = 4
+
     cfg.KEEP_GT_IN_VAL = True
     cfg.TEST.ENABLE_AIR_EVAL = True
     cfg.TEST.ENABLE_TB_IMAGES = True
@@ -286,7 +283,7 @@ def setup_and_train(output_dir, num_classes, args):
         else:
             raise
 
-    # Final Eval logic (Same as before)
+    # Final Eval
     val_loader = build_detection_test_loader(cfg, cfg.DATASETS.TEST[0], mapper=ClassAwareMapper(cfg, is_train=False))
     evaluator = COCOEvaluator(cfg.DATASETS.TEST[0], cfg, False, cfg.OUTPUT_DIR)
     inference_on_dataset(trainer.model, val_loader, evaluator)
@@ -295,16 +292,13 @@ def setup_and_train(output_dir, num_classes, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", type=str, default="r101")
-    parser.add_argument("--batch", type=int, default=16)  # Safe for A100
+    parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--lr", type=float, default=0.002)
-    parser.add_argument("--base-iters", type=int, default=40000)
+    parser.add_argument("--base-iters", type=int, default=50000)  # Increased for DCN
 
-    parser.add_argument("--name", type=str, default="R101_DenseRPN_Strategy")
+    parser.add_argument("--name", type=str, default="R101_DCN_CIoU_Final")
     parser.add_argument("--nms", type=float, default=0.65)
     parser.add_argument("--score", type=float, default=0.5)
-    parser.add_argument("--resume-weights", type=str, default="")
-    parser.add_argument("--cont-lr", type=float, default=1e-4)
-    parser.add_argument("--extra-iters", type=int, default=0)
     parser.add_argument("--force", action="store_true")
 
     args = parser.parse_args()
