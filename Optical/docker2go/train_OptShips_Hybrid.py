@@ -85,14 +85,6 @@ def setup_and_train(output_dir, num_classes, args):
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
 
-    # --- ARCHITECTURE UPGRADE: DEFORMABLE CONV (DCNv2) ---
-    # This enables the model to "deform" its receptive field to catch VAGUE shapes (Tugs/Barges).
-    # Applied to the last 3 stages (Res3, Res4, Res5).
-    cfg.MODEL.RESNETS.DEFORM_ON_PER_STAGE = [False, True, True, True]
-    cfg.MODEL.RESNETS.DEFORM_MODULATED = True  # Use DCNv2 (Better than v1)
-    cfg.MODEL.RESNETS.NUM_GROUPS = 1
-    # -----------------------------------------------------
-
     cfg.DATASETS.TRAIN = ("Ship_Optical_train",)
     cfg.DATASETS.TEST = ("Ship_Optical_val",)
     cfg.DATALOADER.NUM_WORKERS = 16
