@@ -28,12 +28,6 @@ class ClassAwareMapper(DatasetMapper):
     def __call__(self, dataset_dict):
         dataset_dict = copy.deepcopy(dataset_dict)
 
-        # --- FIX: DO NOT DELETE ANNOTATIONS ---
-        # We need them for the Confusion Matrix, even in validation!
-        # if not self.is_train:
-        #    dataset_dict.pop("annotations", None)
-        # ---------------------------------------
-
         if not self.is_train:
             self.tfm_gens = [T.ResizeShortestEdge(short_edge_length=(1000, 1000), max_size=1333, sample_style="choice")]
             return super().__call__(dataset_dict)

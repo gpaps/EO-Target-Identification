@@ -14,6 +14,7 @@ from detectron2.utils.visualizer import Visualizer
 from detectron2.data import MetadataCatalog, DatasetCatalog, DatasetMapper, DatasetFromList, MapDataset
 from detectron2 import model_zoo
 
+from Ship_ModelRunner_vFinal import OUTPUT_ROOT, IMAGE_DIR
 # from Ship_ModelRunner_vFinal_funallinone import TRAIN_ROOT
 from utilities.Ship_ModelRunner_bestmodel_v1 import CLASS_NAMES, MODEL_ROOT
 
@@ -47,16 +48,21 @@ cudnn.benchmark = True
 # Airplanes
 # TRAIN_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/Optical_sweep_lr0.0001_b512_r50/"
 
-# Cars
+# ''''Cars''''
 # TRAIN_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/xView_640/xview_res50_640/Optical_sweep_r50_lr0002_b512/"
 # TRAIN_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/xView_640/extension_40/Optical_sweep_cont40k_r50_lr0002_b512_cont40k/"
 # MODEL_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/xView_640/xview_res50_640/Optical_sweep_r50_lr0002_b512/"
 # MODEL_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/xView_640/extension_40/Optical_sweep_cont40k_r50_lr0002_b512_cont40k/"
+# TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/3cl/xview_res50_640/Optical_Final_R50_HighDensity_LongAnchors_40k/"
+# MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/3cl/xview_res50_640/Optical_Final_R50_HighDensity_LongAnchors_40k/"
+# IMAGE_DIR = '/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/3cl/xview_res50_640/Optical_Final_R50_HighDensity_LongAnchors_40k/SKYsat_Herackleion/640x512/20251222_064159_ssc1d1_0010_basic_analytic/tiles_640/'
+# OUTPUT_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/3cl/xview_res50_640/Optical_Final_R50_HighDensity_LongAnchors_40k/SKYsat_Herackleion/Prediction/"
 
-TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_sweep_R50_Satellite_Opt_v1_20260129_093252/"
-MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_sweep_R50_Satellite_Opt_v1_20260129_093252/"
-IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/800x800/20251222_064159_ssc1d1_0010_basic_analytic/tiles_800/"
-OUTPUT_ROOT ="/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_sweep_R50_Satellite_Opt_v1_20260129_093252/output_herackleion/800x800/"
+'''Optical Ships'''
+TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/"
+MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/model_best.pth"
+IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/test/20251222_064159_ssc1d1_0010_basic_analytic/"
+OUTPUT_ROOT ="/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/Prediction/"
 
 # IMAGE_DIR = '/media/gpaps/My Passport/CVRL-GeorgeP/_/inference_data/optical_inference_data/pansharpened/Peiraeus640x512/pansharpened/tiles_640/' Athens640x640
 # Where to look for candidate checkpoints (early-stopped runs are inside here)
@@ -99,7 +105,7 @@ MAX_IMAGES = 22000
 RANDOM_SEED = 42
 
 # Threshold grids for sweeps
-SCORE_THRESHOLDS = [0.80]
+SCORE_THRESHOLDS = [0.85]
 NMS_THRESHOLDS = [0.5]
 
 # ---- Collect weights (prefer model_best.pth, else model_final.pth) ----
@@ -170,14 +176,15 @@ def scan_and_report_best(output_root: str):
 
 def build_cfg(model_path, score_thresh, nms_thresh):
     cfg = get_cfg()
-    cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
+    cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml"))
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(CLASS_NAMES)
     cfg.MODEL.WEIGHTS = model_path
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = nms_thresh
-
-    # your small-object tweaks preserved
     cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = True
+    cfg.INPUT.MIN_SIZE_TEST = 1000
+    cfg.INPUT.MAX_SIZE_TEST = 1333
+    # your small-object tweaks preserved
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[32], [64], [128], [256], [512]]
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.5, 1.0, 2.0]] * 5
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 24], [24, 32], [32, 48]]
@@ -200,14 +207,32 @@ def build_cfg(model_path, score_thresh, nms_thresh):
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 24], [24, 32],[32, 48]]  #anchors/pos/level = 2*3 = 6 everywhere
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8], [12], [16], [24], [32]] # VANILLA worked
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 24], [24, 32]]#, [32, 48]]  #anchors/pos/level = 2*3 = 6 everywhere
-    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16], [32], [64], [128], [256]]
+
+    #TODO for CARS
+    # cfg.INPUT.MIN_SIZE_TEST = 640
+    # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.5, 1.0, 2.0]]
+    # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 32], [32, 64]]
+    # --- 2. CLEANUP (The Secret Sauce) ---
+    # We found that 0.50 cuts the pavement noise perfectly.
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.85
+    # --- 3. DENSITY (Optional Tweak) ---
+    # You can try raising this to 0.65 to see if it helps parking lots,
+    # even though the model wasn't explicitly trained for it.
+    # cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = 0.5  # Default (Safe)
+    # cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = 0.65 # Experimental (Dense)
+    # --- 4. CAPACITY ---
+    # Ensure you don't cap detections too low if testing on a parking lot
+    # cfg.TEST.DETECTIONS_PER_IMAGE = 3000
+
+   # TODO FOR OPTICAL SHIPS
+    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256, 384]]
     cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
+
 
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.33, 0.5, 1.0, 2.0, 3.0]]
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 32], [32, 64]]
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.5, 1.0, 2.0]]
-    # cfg.MODEL.RPN.IN_FEATURES = ["p2", "p3", "p4", "p5"]  # p6 removed is for massive objects
-    # cfg.MODEL.ROI_HEADS.IN_FEATURES = ["p2", "p3", "p4", "p5"]
+
     # Allow the pipeline to carry thousands of boxes
     # cfg.MODEL.RPN.PRE_NMS_TOPK_TEST = 8000
     # cfg.MODEL.RPN.POST_NMS_TOPK_TEST = 6000

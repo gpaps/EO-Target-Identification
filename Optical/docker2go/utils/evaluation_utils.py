@@ -141,9 +141,7 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                             "iou": float(best_iou)
                         })
 
-                # 2. Log False Positives (The missing part!)
-                # If there are predictions but no GT (or even if there are GT, we can log extras)
-                # For simplicity, we log FPs only on purely empty images to avoid duplicate matching logic
+                # 2. Log False Positives (FIXED!)
                 elif len(pred_boxes) > 0:
                     for j, pred_box in enumerate(pred_boxes):
                         results.append({
