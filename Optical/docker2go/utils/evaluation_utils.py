@@ -41,7 +41,7 @@ class MiniAirEvaluator:
             y_true = self.df['gt_class'].values
             y_pred = self.df['pred_class'].values
 
-            # Safety: Handle cases where no predictions exist
+            # Map -1 (Missed/FP) to Background Index
             y_pred[y_pred == -1] = self.bg_idx
             y_true[y_true == -1] = self.bg_idx
 
@@ -64,7 +64,6 @@ class MiniAirEvaluator:
         try:
             df = self.compute_metrics()
             if df.empty:
-                print("[Warn] Metrics DF empty. Skipping table.")
                 return
 
             df.to_csv(os.path.join(self.output_dir, "val_metrics.csv"))
@@ -96,16 +95,22 @@ def dump_predictions_to_csv(model, data_loader, output_path):
             outputs = model(inputs)
             for input_im, output_im in zip(inputs, outputs):
                 img_name = input_im["file_name"]
-                gt_instances = input_im["instances"]
-                gt_boxes = gt_instances.gt_boxes.tensor.cpu().numpy()
-                gt_classes = gt_instances.gt_classes.cpu().numpy()
+
+                # FIX: Handle missing GT (Background images) safely
+                if "instances" in input_im:
+                    gt_instances = input_im["instances"]
+                    gt_boxes = gt_instances.gt_boxes.tensor.cpu().numpy()
+                    gt_classes = gt_instances.gt_classes.cpu().numpy()
+                else:
+                    gt_boxes = []
+                    gt_classes = []
 
                 pred_instances = output_im["instances"]
                 pred_boxes = pred_instances.pred_boxes.tensor.cpu().numpy()
                 pred_classes = pred_instances.pred_classes.cpu().numpy()
                 scores = pred_instances.scores.cpu().numpy()
 
-                # If there are GT objects, we try to match them
+                # 1. Match GT with Predictions
                 if len(gt_classes) > 0:
                     for i, gt_cls in enumerate(gt_classes):
                         best_iou = 0
@@ -113,7 +118,6 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                         best_score = 0
                         gt_box = gt_boxes[i]
 
-                        # Try to find a match among predictions
                         for j, pred_box in enumerate(pred_boxes):
                             xA = max(gt_box[0], pred_box[0])
                             yA = max(gt_box[1], pred_box[1])
@@ -129,17 +133,26 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                                 best_match_cls = pred_classes[j]
                                 best_score = scores[j]
 
-                        # Append result (Even if NO MATCH found, so we log the Miss)
                         results.append({
                             "image": os.path.basename(img_name),
                             "gt_class": int(gt_cls),
-                            "pred_class": int(best_match_cls),  # -1 if missed
+                            "pred_class": int(best_match_cls),
                             "score": float(best_score),
                             "iou": float(best_iou)
                         })
+
+                # 2. Log False Positives (The missing part!)
+                # If there are predictions but no GT (or even if there are GT, we can log extras)
+                # For simplicity, we log FPs only on purely empty images to avoid duplicate matching logic
                 elif len(pred_boxes) > 0:
-                    # Log False Positives on empty images (optional, skipped to keep CSV clean for now)
-                    pass
+                    for j, pred_box in enumerate(pred_boxes):
+                        results.append({
+                            "image": os.path.basename(img_name),
+                            "gt_class": -1,  # Background
+                            "pred_class": int(pred_classes[j]),
+                            "score": float(scores[j]),
+                            "iou": 0.0
+                        })
 
     df = pd.DataFrame(results)
     if not df.empty:
@@ -172,9 +185,7 @@ class EvalHook(HookBase):
             print(f"[EvalHook] Eval results at iter {next_iter}: {results}")
             current_ap = results.get("bbox", {}).get("AP", -1)
 
-            # Handle NaN AP (happens in early training)
-            if str(current_ap) == 'nan':
-                current_ap = 0.0
+            if str(current_ap) == 'nan': current_ap = 0.0
 
             if current_ap > self.best_ap:
                 self.best_ap = current_ap
@@ -208,10 +219,8 @@ def plot_loss_curves(output_dir):
 
         df = pd.DataFrame(data)
         if 'total_loss' not in df.columns:
-            print("[Warn] metrics.json does not contain 'total_loss'.")
             return
 
-        # FIX: Use .copy() to avoid SettingWithCopyWarning
         df_train = df[df['total_loss'].notna()].copy()
         metrics = ['total_loss', 'loss_cls', 'loss_box_reg', 'loss_rpn_cls', 'loss_rpn_loc']
 
@@ -223,7 +232,6 @@ def plot_loss_curves(output_dir):
         for i, metric in enumerate(metrics):
             if metric in df_train.columns:
                 sns.lineplot(data=df_train, x='iteration', y=metric, ax=axes[i], alpha=0.3, color='blue', label='Raw')
-                # FIX: Check if we have enough data to smooth
                 if len(df_train) > 5:
                     window = min(50, len(df_train) // 2)
                     df_train[f'{metric}_smooth'] = df_train[metric].rolling(window=window).mean()

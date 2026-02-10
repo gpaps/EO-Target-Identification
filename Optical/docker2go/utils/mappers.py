@@ -8,33 +8,33 @@ class ClassAwareMapper(DatasetMapper):
         super().__init__(cfg, is_train=is_train)
         self.cfg = cfg
 
-        # 1. STANDARD AUG (Applies to EVERY class)
+        # 1. STANDARD AUG
         self.standard_aug = [
-            # SCALING: Keep the winning strategy
             T.ResizeShortestEdge(short_edge_length=(900, 1000, 1100, 1200), max_size=1333, sample_style="choice"),
-
-            # GEOMETRY
             T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
             T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-
-            # ATMOSPHERIC SIMULATION (The "Pale/Haze" Fix)
             T.RandomApply(T.RandomContrast(0.8, 1.2), prob=0.3),
             T.RandomApply(T.RandomBrightness(0.8, 1.2), prob=0.3),
             T.RandomApply(T.RandomSaturation(0.8, 1.2), prob=0.3),
         ]
 
-        # 2. EXTRA AUG (Targeted Geometry)
+        # 2. EXTRA AUG
         self.extra_aug = [
             T.RandomApply(T.RandomRotation(angle=[-45, 45]), prob=0.5),
         ]
 
-        # 3. TARGETS (Commercial, Rec, Fishing, Sub)
         self.target_class_ids = [0, 2, 3, 4]
 
     def __call__(self, dataset_dict):
-        dataset_dict = copy.deepcopy(dataset_dict)  # Safety copy
+        dataset_dict = copy.deepcopy(dataset_dict)
+
+        # --- FIX: DO NOT DELETE ANNOTATIONS ---
+        # We need them for the Confusion Matrix, even in validation!
+        # if not self.is_train:
+        #    dataset_dict.pop("annotations", None)
+        # ---------------------------------------
+
         if not self.is_train:
-            dataset_dict.pop("annotations", None)
             self.tfm_gens = [T.ResizeShortestEdge(short_edge_length=(1000, 1000), max_size=1333, sample_style="choice")]
             return super().__call__(dataset_dict)
 
