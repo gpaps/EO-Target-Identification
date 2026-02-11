@@ -96,7 +96,7 @@ def dump_predictions_to_csv(model, data_loader, output_path):
             for input_im, output_im in zip(inputs, outputs):
                 img_name = input_im["file_name"]
 
-                # FIX: Handle missing GT (Background images) safely
+                # Manual GT Extraction (Mirroring Mapper)
                 if "instances" in input_im:
                     gt_instances = input_im["instances"]
                     gt_boxes = gt_instances.gt_boxes.tensor.cpu().numpy()
@@ -141,12 +141,12 @@ def dump_predictions_to_csv(model, data_loader, output_path):
                             "iou": float(best_iou)
                         })
 
-                # 2. Log False Positives (FIXED!)
+                # 2. Log False Positives (FIXED: NO PASS)
                 elif len(pred_boxes) > 0:
                     for j, pred_box in enumerate(pred_boxes):
                         results.append({
                             "image": os.path.basename(img_name),
-                            "gt_class": -1,  # Background
+                            "gt_class": -1,
                             "pred_class": int(pred_classes[j]),
                             "score": float(scores[j]),
                             "iou": 0.0
@@ -219,6 +219,7 @@ def plot_loss_curves(output_dir):
         if 'total_loss' not in df.columns:
             return
 
+        # Reverted to simple plotter (No reset logic)
         df_train = df[df['total_loss'].notna()].copy()
         metrics = ['total_loss', 'loss_cls', 'loss_box_reg', 'loss_rpn_cls', 'loss_rpn_loc']
 

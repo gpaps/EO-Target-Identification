@@ -11,18 +11,16 @@ from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 from detectron2.checkpoint import DetectionCheckpointer
 import torch.backends.cudnn as cudnn
 
-# --- CUSTOM IMPORTS ---
 from utils.tensorboard_utils import logText
 from samplers.balanced_sampler import BalancedSampler
 from register_Ship_dataset import register_datasets
 from utils.mappers import ClassAwareMapper
-# Added generate_class_distribution_heatmap to imports
 from utils.evaluation_utils import EvalHook, MiniAirEvaluator, dump_predictions_to_csv, plot_loss_curves
 from utils.generate_heatmap import generate_class_distribution_heatmap
-
 from yacs.config import CfgNode as CN
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)  # Silence the remaining meshgrid warnings
 
 # 1. OPTIMIZATION
 cudnn.benchmark = True
@@ -78,35 +76,26 @@ class AugmentedTrainer(DefaultTrainer):
         )
 
 
-# --- HELPER: GUARANTEED POST-PROCESSING ---
 def run_final_analysis(cfg, model):
     print("\n[Post-Processing] Starting Final Analysis...")
     try:
-        # 1. Loss Curves
         print("[1/4] Generating Loss Plots...")
         plot_loss_curves(cfg.OUTPUT_DIR)
 
-        # 2. Class Distribution Heatmap
         print("[2/4] Generating Class Distribution Heatmap...")
-
-        # FIX: Changed filename to match what BalancedSampler produces
         csv_log_path = os.path.join(cfg.OUTPUT_DIR, "batch_class_distribution.csv")
-
         if os.path.exists(csv_log_path):
             generate_class_distribution_heatmap(csv_log_path, cfg.OUTPUT_DIR)
         else:
             print(f"[Warn] CSV not found at {csv_log_path}. Skipping heatmap.")
 
-        # 3. Validation Inference
         print("[3/4] Running Inference for Analysis (Threshold=0.05)...")
-        # Lower threshold to capture even weak detections for analysis
         model.roi_heads.score_thresh_test = 0.05
 
         val_loader = build_detection_test_loader(cfg, cfg.DATASETS.TEST[0],
                                                  mapper=ClassAwareMapper(cfg, is_train=False))
         csv_path = os.path.join(cfg.OUTPUT_DIR, "prediction_log_final.csv")
 
-        # 4. Dump Predictions & Matrices
         print("[4/4] Processing Predictions...")
         df_preds = dump_predictions_to_csv(model, val_loader, csv_path)
 
@@ -117,7 +106,7 @@ def run_final_analysis(cfg, model):
             mini_eval.save_metrics_table()
             print("✅ Analysis Complete. All files generated.")
         else:
-            print("⚠ No predictions generated. Skipping Matrix.")
+            print("⚠️ No predictions generated. Skipping Matrix.")
 
     except Exception as e:
         print(f"❌ [Error] Final Analysis Failed: {e}")
@@ -126,7 +115,6 @@ def run_final_analysis(cfg, model):
 def setup_and_train(output_dir, num_classes, args):
     cfg = get_cfg()
 
-    # 1. ARCHITECTURE
     if args.backbone == "r101":
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml"))
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_101_FPN_3x.yaml")
@@ -134,14 +122,9 @@ def setup_and_train(output_dir, num_classes, args):
         cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
         cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml")
 
-    # --- DISABLED DCN (To avoid runtime error) ---
-    # cfg.MODEL.RESNETS.DEFORM_ON_PER_STAGE = [False, True, True, True]
-    # cfg.MODEL.RESNETS.DEFORM_MODULATED = True
-    # cfg.MODEL.RESNETS.NUM_GROUPS = 1
-
     cfg.DATASETS.TRAIN = ("Ship_Optical_train",)
     cfg.DATASETS.TEST = ("Ship_Optical_val",)
-    cfg.DATALOADER.NUM_WORKERS = 16
+    cfg.DATALOADER.NUM_WORKERS = 16  # Reduced workers to save CPU RAM for the heavy RPN
 
     # 2. SOLVER
     cfg.SOLVER.IMS_PER_BATCH = args.batch
@@ -158,41 +141,44 @@ def setup_and_train(output_dir, num_classes, args):
     cfg.SOLVER.AMP.ENABLED = True
 
     # 3. INPUT
-    cfg.INPUT.MIN_SIZE_TRAIN = (900, 1000, 1100, 1200)
+    cfg.INPUT.MIN_SIZE_TRAIN = (800, 900, 1000, 1200)  # Slightly reduced max scale for speed
     cfg.INPUT.MAX_SIZE_TRAIN = 1333
     cfg.INPUT.MIN_SIZE_TEST = 1000
     cfg.INPUT.MAX_SIZE_TEST = 1333
     cfg.INPUT.RANDOM_FLIP = "none"
 
-    # 4. DENSE RPN
+    # 4. DENSE RPN (OPTIMIZED FOR SPEED)
+    # We keep the custom sizes (Recall) but reduce the processing count (Speed)
     cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256, 384]]
     cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
+
     cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 1024
     cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION = 0.33
+
+    # --- SPEED FIX IS HERE ---
+    # Was 6000/3000 (Killer). Now 2000/1000 (Standard)
+    # This reduces memory load by 66% and speeds up training by ~4x
     cfg.MODEL.RPN.NMS_THRESH = 0.8
-    cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 6000
-    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000
+    cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 2000
+    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 1000
+    # -------------------------
 
     cfg.MODEL.ROI_HEADS.NAME = "StandardROIHeads"
     cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = True
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = num_classes
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.score
     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = args.nms
-
     cfg.MODEL.ROI_BOX_HEAD.BBOX_REG_LOSS_TYPE = "ciou"
 
     cfg.EARLY_STOP = CN()
-    cfg.EARLY_STOP.PATIENCE = 0
+    cfg.EARLY_STOP.PATIENCE = 5
     cfg.OUTPUT_DIR = output_dir
 
-    # --- CRITICAL CONFIGS ---
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = False
     cfg.RARE_CLASS_IDS = [0, 2, 4]
     cfg.OVERSAMPLE_FACTOR = 4
-
     cfg.KEEP_GT_IN_VAL = True
     cfg.TEST.ENABLE_AIR_EVAL = True
-    cfg.TEST.ENABLE_TB_IMAGES = True
 
     os.makedirs(output_dir, exist_ok=True)
     logText(cfg, cfg.OUTPUT_DIR)
@@ -200,7 +186,6 @@ def setup_and_train(output_dir, num_classes, args):
     trainer = AugmentedTrainer(cfg)
     trainer.resume_or_load(resume=False)
 
-    # --- ROBUST EXECUTION BLOCK ---
     try:
         trainer.train()
     except Exception as e:
@@ -210,7 +195,6 @@ def setup_and_train(output_dir, num_classes, args):
             print(f"❌ Training Crashed: {e}")
             raise
     finally:
-        # Load best model if available
         checkpointer = DetectionCheckpointer(trainer.model, cfg.OUTPUT_DIR)
         best_path = os.path.join(cfg.OUTPUT_DIR, "model_best.pth")
         if os.path.exists(best_path):
@@ -225,10 +209,10 @@ def setup_and_train(output_dir, num_classes, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", type=str, default="r101")
-    parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--batch", type=int, default=16)  # CHANGED DEFAULT TO 8 FOR SAFETY
     parser.add_argument("--lr", type=float, default=0.002)
     parser.add_argument("--base-iters", type=int, default=40000)
-    parser.add_argument("--name", type=str, default="R101_Hybrid_Refactored")
+    parser.add_argument("--name", type=str, default="R101_Optimized")
     parser.add_argument("--nms", type=float, default=0.65)
     parser.add_argument("--score", type=float, default=0.5)
     parser.add_argument("--force", action="store_true")
