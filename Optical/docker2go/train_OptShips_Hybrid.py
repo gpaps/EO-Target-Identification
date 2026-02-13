@@ -20,7 +20,7 @@ from utils.generate_heatmap import generate_class_distribution_heatmap
 from yacs.config import CfgNode as CN
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)  # Silence the remaining meshgrid warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # 1. OPTIMIZATION
 cudnn.benchmark = True
@@ -124,7 +124,7 @@ def setup_and_train(output_dir, num_classes, args):
 
     cfg.DATASETS.TRAIN = ("Ship_Optical_train",)
     cfg.DATASETS.TEST = ("Ship_Optical_val",)
-    cfg.DATALOADER.NUM_WORKERS = 16  # Reduced workers to save CPU RAM for the heavy RPN
+    cfg.DATALOADER.NUM_WORKERS = 16
 
     # 2. SOLVER
     cfg.SOLVER.IMS_PER_BATCH = args.batch
@@ -141,27 +141,21 @@ def setup_and_train(output_dir, num_classes, args):
     cfg.SOLVER.AMP.ENABLED = True
 
     # 3. INPUT
-    cfg.INPUT.MIN_SIZE_TRAIN = (800, 900, 1000, 1200)  # Slightly reduced max scale for speed
+    cfg.INPUT.MIN_SIZE_TRAIN = (800, 900, 1000, 1100)
     cfg.INPUT.MAX_SIZE_TRAIN = 1333
     cfg.INPUT.MIN_SIZE_TEST = 1000
     cfg.INPUT.MAX_SIZE_TEST = 1333
     cfg.INPUT.RANDOM_FLIP = "none"
 
-    # 4. DENSE RPN (OPTIMIZED FOR SPEED)
-    # We keep the custom sizes (Recall) but reduce the processing count (Speed)
+    # 4. DENSE RPN
     cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 24], [32, 48], [64, 96], [128, 192], [256, 384]]
     cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.2, 0.5, 1.0, 2.0, 5.0]]
-
     cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 1024
     cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION = 0.33
 
-    # --- SPEED FIX IS HERE ---
-    # Was 6000/3000 (Killer). Now 2000/1000 (Standard)
-    # This reduces memory load by 66% and speeds up training by ~4x
     cfg.MODEL.RPN.NMS_THRESH = 0.8
-    cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 2000
-    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 1000
-    # -------------------------
+    cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 6000  # Kept high, but safe with Batch=8
+    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000
 
     cfg.MODEL.ROI_HEADS.NAME = "StandardROIHeads"
     cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = True
@@ -209,10 +203,10 @@ def setup_and_train(output_dir, num_classes, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", type=str, default="r101")
-    parser.add_argument("--batch", type=int, default=16)  # CHANGED DEFAULT TO 8 FOR SAFETY
-    parser.add_argument("--lr", type=float, default=0.002)
+    parser.add_argument("--batch", type=int, default=16)  # SAFE BATCH SIZE
+    parser.add_argument("--lr", type=float, default=0.001)  # LOWER LR FOR LOWER BATCH
     parser.add_argument("--base-iters", type=int, default=40000)
-    parser.add_argument("--name", type=str, default="R101_Optimized")
+    parser.add_argument("--name", type=str, default="R101_Hybrid_Stable")
     parser.add_argument("--nms", type=float, default=0.65)
     parser.add_argument("--score", type=float, default=0.5)
     parser.add_argument("--force", action="store_true")
