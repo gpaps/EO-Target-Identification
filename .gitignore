@@ -46,3 +46,4 @@ SAR/INFER_docker2go/**/tiles_*/**
 SAR/INFER_docker2go/dataset/
 SAR/INFER_docker2go/**/tiles_*/
 SAR/INFER_docker2go/**/tiles_*/**
+SAR/json/SAR_Ships_train.json
