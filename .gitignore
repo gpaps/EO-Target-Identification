@@ -30,3 +30,9 @@ __pycache__/
 # venvs
 .venv/
 .idea/
+
+# big SAR artifacts (do not version)
+SAR/INFER_docker2go/dataset/
+SAR/INFER_docker2go/*_tiles_*/
+SAR/INFER_docker2go/**/tiles_*/
+SAR/INFER_docker2go/**/tiles_*/**
