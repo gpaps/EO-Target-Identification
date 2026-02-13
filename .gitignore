@@ -1,2 +1,32 @@
-/Bench_sarships/
-/Bench_sat/
+# datasets / benchmarks / exports
+Bench_sarships/
+Bench_sat/
+final_EDA_Benchmark_/
+data/
+dataset/
+datasets/
+SAR/INFER_docker2go/dataset/
+
+# EDA outputs
+Optical_EDA_outputs/
+SAR_EDA_outputs/
+
+# docker scratch / copies
+docker2go/
+
+# model artifacts / logs
+output/
+outputs/
+runs/
+checkpoints/
+*.pth
+*.pt
+*.onnx
+
+# python noise
+__pycache__/
+*.pyc
+
+# venvs
+.venv/
+.idea/
