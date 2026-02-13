@@ -1,0 +1,9 @@
+{
+  "detections_total": 46,
+  "per_class": {
+    "ship": 46
+  },
+  "avg_confidence": 0.8638873799987461,
+  "runtime_sec": 0.319,
+  "georef_source": "rasterio"
+}

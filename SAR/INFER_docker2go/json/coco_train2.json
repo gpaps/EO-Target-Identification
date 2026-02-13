@@ -1,0 +1,60 @@
+{
+    "images": [
+        {
+            "id": 1,
+            "file_name": "grid_11_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 2,
+            "file_name": "grid_17_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 3,
+            "file_name": "grid_10_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 4,
+            "file_name": "grid_16_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 5,
+            "file_name": "grid_22_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 6,
+            "file_name": "grid_7_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 7,
+            "file_name": "grid_8_cleaned.png",
+            "width": 447,
+            "height": 447
+        },
+        {
+            "id": 8,
+            "file_name": "grid_2_cleaned.png",
+            "width": 447,
+            "height": 447
+        }
+    ],
+    "annotations": [],
+    "categories": [
+        {
+            "id": 1,
+            "name": "ships",
+            "supercategory": "none"
+        }
+    ]
+}

@@ -1,0 +1,50 @@
+Total Images: 9060
+Total Annotations: 24402
+Unique Classes: 5
+
+
+Suggested Resize Parameters:
+- Based on object size:
+  MIN_SIZE_TRAIN = range(1024, 1280)
+  MAX_SIZE_TRAIN = 1920
+  MIN_SIZE_TEST  = 1280
+
+- Based on resolution percentiles:
+  MIN_SIZE_TRAIN = range(720, 930)
+  MAX_SIZE_TRAIN = 1280
+
+Aspect Ratio (mean): 1.58
+Normalized BBox Area (mean): 0.02929
+BBox Area (mean): 25872.0
+Brightness (mean): 63.6
+
+
+/home/gpaps/anaconda3/envs/esa/bin/python /home/gpaps/PycharmProject/Esa_Ships/utilities/eda.py
+Brightness Analysis: 100%|██████████| 9060/9060 [05:20<00:00, 28.26it/s]
+
+=== OBJECT SIZE ANALYSIS (in pixels) ===
+Side-length stats (px):
+  min   : 0.0
+  p5    : 17.233687939614086
+  p25   : 38.39270764090493
+  median: 81.54753215150045
+  p75   : 166.3249830903343
+  p95   : 340.9065666391872
+  max   : 960.0
+
+Object size bins:
+  tiny (<12px):          259  (1.06%)
+  small (12–32px):   4713 (19.31%)
+  medium (32–96px): 8827 (36.17%)
+  large (≥96px):        10603 (43.45%)
+
+5 smallest objects (width, height):
+  [256.0, 291.0, 0.0, 0.0]
+  [953.0, 551.0, 6.0, 5.0]
+  [617, 677, 5, 8]
+  [603, 674, 5, 8]
+  [624, 685, 5, 8]
+
+Process finished with exit code 0
+
+

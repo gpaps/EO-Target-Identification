@@ -1,0 +1,15 @@
+{
+  "bbox": {
+    "AP": 2.7722772277227725,
+    "AP50": 3.9603960396039604,
+    "AP75": 3.9603960396039604,
+    "APs": 0.0,
+    "APm": 0.0,
+    "APl": 9.009900990099009,
+    "AP-Commercial": 0.0,
+    "AP-Military": 5.544554455445545,
+    "AP-Submarines": NaN,
+    "AP-Recreational Boats": NaN,
+    "AP-Fishing Boats": NaN
+  }
+}

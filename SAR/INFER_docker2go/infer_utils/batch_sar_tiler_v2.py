@@ -3,8 +3,10 @@ from pathlib import Path
 import rasterio
 
 # ==== CONFIG (edit these) ====
-INPUT_GLOB = '/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/SkySatScene/*.tif'
-OUT_ROOT = '/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/1000x1000/'
+# INPUT_GLOB = '/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/SkySatScene/*.tif'
+# OUT_ROOT = '/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/1000x1000/'
+INPUT_GLOB = '/media/gpaps/My Passport/CVRL-GeorgeP/_/received_satellite_data/Optical/Athens-Airport/PelicanScene/*.tif'
+OUT_ROOT = '/media/gpaps/My Passport/CVRL-GeorgeP/_/received_satellite_data/Optical/Athens-Airport/PelicanScene/1000x1000/'
 
 SMOOTH = 'none'
 ON_ERROR = 'skip'

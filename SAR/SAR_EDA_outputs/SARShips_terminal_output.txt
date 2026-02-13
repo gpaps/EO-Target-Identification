@@ -1,0 +1,16 @@
+Width outlier threshold (5-95%): [500.0, 800.0]
+Height outlier threshold (5-95%): [312.0, 800.0]
+Total Duplicate Images: 0
+
+Image Info Summary:
+       license  url       height  ...  date_captured            id  aspect_ratio
+count   3925.0  0.0  4734.000000  ...            0.0   4734.000000   4734.000000
+mean       0.0  NaN   719.791508  ...            NaN  19013.971694      1.081712
+std        0.0  NaN   177.689453  ...            NaN   8502.938302      0.200012
+min        0.0  NaN   190.000000  ...            NaN      1.000000      0.769874
+25%        0.0  NaN   800.000000  ...            NaN  20515.250000      1.000000
+50%        0.0  NaN   800.000000  ...            NaN  22225.000000      1.000000
+75%        0.0  NaN   800.000000  ...            NaN  23937.500000      1.000000
+max        0.0  NaN   800.000000  ...            NaN  25602.000000      2.604167
+
+[8 rows x 7 columns]

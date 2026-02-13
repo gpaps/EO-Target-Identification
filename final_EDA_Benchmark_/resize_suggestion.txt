@@ -1,0 +1,10 @@
+
+Suggested Resize Parameters:
+- Based on object size:
+  MIN_SIZE_TRAIN = range(1024, 1280)
+  MAX_SIZE_TRAIN = 1920
+  MIN_SIZE_TEST  = 1280
+
+- Based on resolution percentiles:
+  MIN_SIZE_TRAIN = range(720, 930)
+  MAX_SIZE_TRAIN = 1280

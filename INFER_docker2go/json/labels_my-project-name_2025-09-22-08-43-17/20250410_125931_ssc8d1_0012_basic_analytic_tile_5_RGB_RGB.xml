@@ -1,0 +1,25 @@
+<annotation>
+	<folder>my-project-name</folder>
+	<filename>20250410_125931_ssc8d1_0012_basic_analytic_tile_5_RGB_RGB.png</filename>
+	<path>/my-project-name/20250410_125931_ssc8d1_0012_basic_analytic_tile_5_RGB_RGB.png</path>
+	<source>
+		<database>Unspecified</database>
+	</source>
+	<size>
+		<width>760</width>
+		<height>205</height>
+		<depth>3</depth>
+	</size>
+	<object>
+		<name>Commercial</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>295</xmin>
+			<ymin>53</ymin>
+			<xmax>336</xmax>
+			<ymax>67</ymax>
+		</bndbox>
+	</object>
+</annotation>

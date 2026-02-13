@@ -59,10 +59,13 @@ cudnn.benchmark = True
 # OUTPUT_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/VehiOpt/3cl/xview_res50_640/Optical_Final_R50_HighDensity_LongAnchors_40k/SKYsat_Herackleion/Prediction/"
 
 '''Optical Ships'''
-TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/"
-MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/model_best.pth"
-IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/test/20251222_064159_ssc1d1_0010_basic_analytic/"
-OUTPUT_ROOT ="/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_DenseRPN_1024ROI/Prediction/"
+TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_Dense_Hybrid0_Bg_CIoU/"
+MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_Dense_Hybrid0_Bg_CIoU/"
+# IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/final_inference/Heraklion/Optical/Optical_Heraklion_skysatscene_basic_analytic_udm2_20251222/patches_SkySatScene/test/20251222_064159_ssc1d1_0010_basic_analytic/"
+# IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/ships/image_tiles_patch/temp1000/"
+# IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/received_satellite_data/Optical/Chania-Port/SkySatScene/1000x1000/20260206_130330_ssc10d2_0007_basic_analytic/tiles_1000/"
+IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/received_satellite_data/Optical/Volos-Port/PelicanScene/1000x1000/20260207_091649_87_300d_basic_analytic/tiles_1000/"
+OUTPUT_ROOT ="/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipOpt/superdataset/Optical_R101_Dense_Hybrid0_Bg_CIoU/Predictions_VolosPort"
 
 # IMAGE_DIR = '/media/gpaps/My Passport/CVRL-GeorgeP/_/inference_data/optical_inference_data/pansharpened/Peiraeus640x512/pansharpened/tiles_640/' Athens640x640
 # Where to look for candidate checkpoints (early-stopped runs are inside here)
@@ -106,7 +109,7 @@ RANDOM_SEED = 42
 
 # Threshold grids for sweeps
 SCORE_THRESHOLDS = [0.85]
-NMS_THRESHOLDS = [0.5]
+NMS_THRESHOLDS = [0.6]
 
 # ---- Collect weights (prefer model_best.pth, else model_final.pth) ----
 _cands = glob(os.path.join(MODEL_ROOT, "**", "model_best.pth"), recursive=True) \
@@ -214,7 +217,7 @@ def build_cfg(model_path, score_thresh, nms_thresh):
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8, 12], [12, 16], [16, 32], [32, 64]]
     # --- 2. CLEANUP (The Secret Sauce) ---
     # We found that 0.50 cuts the pavement noise perfectly.
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.85
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.60
     # --- 3. DENSITY (Optional Tweak) ---
     # You can try raising this to 0.65 to see if it helps parking lots,
     # even though the model wasn't explicitly trained for it.
