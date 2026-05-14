@@ -8,7 +8,7 @@ from collections import Counter
 from tqdm import tqdm
 import cv2
 
-# --- CONFIGURATION ---
+# -- CONFIGURATION --
 # TODO: User, please specify the path to your COCO JSON file and image directory.
 JSON_PATH = "/media/gpaps/My Passport/CVRL-GeorgeP/_/Campaing/SAR/SHIPSv3/mySAR_Ship_dataset/annotations.json"
 IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/Campaing/SAR/SHIPSv3/mySAR_Ship_dataset/images"
