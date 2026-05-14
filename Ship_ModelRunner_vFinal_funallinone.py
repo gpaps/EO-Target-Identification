@@ -9,8 +9,8 @@ import cv2
 from collections import Counter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
-import time
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, average_precision_score, precision_recall_curve
+import seaborn as sns
 
 from detectron2.config import get_cfg
 from detectron2.engine import DefaultPredictor
@@ -34,19 +34,28 @@ except Exception:
     def d2_collate(batch):
         return batch
 
+# ==================================================================================================
+# USER ACTION REQUIRED:
+# Please update the following paths to point to your model, dataset, and output directory.
+# Also, ensure CLASS_NAMES is set correctly for your dataset.
+# ==================================================================================================
+
 # TRAIN_ROOT= "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
 # MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
 # TRAIN_ROOT= "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
-TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
-MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
-OUTPUT_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/output_pred_bench_5/"
-JSON_PATH = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/temp256/opt_Air.json"
-IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/temp256/"
+
+# TRAIN_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
+# MODEL_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/AirOpt/test/Onlythis/fine_tune/Optical_sweep_2default/"
+# OUTPUT_ROOT = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/output_pred_bench_5/"
+# JSON_PATH = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/temp256/opt_Air.json"
+# IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/planes/images/temp256/"
 
 # ========= Centralized CONFIG SAR =========
-# TRAIN_ROOT  = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_december/finetune_base_v5_lr0.0002_b512_v21/"
-# MODEL_ROOT  = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_december/finetune_base_v5_lr0.0002_b512_v21/"
-# OUTPUT_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/Trained_models/ShipSAR/run_0/finetune_december/finetune_base_v5_lr0.0002_b512_v21/output_2/"
+TRAIN_ROOT  = r"home/gpaps/PycharmProject/SW-03-01 Target Identification/models/"
+MODEL_ROOT  = r"/home/gpaps/PycharmProject/SW-03-01 Target Identification/models/"
+OUTPUT_ROOT = r"/media/gpaps/My Passport/CVRL-GeorgeP/_/Campaing/SAR/SHIPSv3/mySAR_Ship_dataset/used_as_validation/"
+JSON_PATH = "/media/gpaps/My Passport/CVRL-GeorgeP/_/Campaing/SAR/SHIPSv3/mySAR_Ship_dataset/annotations.json"
+IMAGE_DIR = "/media/gpaps/My Passport/CVRL-GeorgeP/_/Campaing/SAR/SHIPSv3/mySAR_Ship_dataset/images/"
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # Dataset-SAR
@@ -63,7 +72,7 @@ os.makedirs(OUTPUT_ROOT, exist_ok=True)
 # IMAGE_DIR   = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/ships/temp768/"
 # JSON_PATH   = "/media/gpaps/My Passport/CVRL-GeorgeP/_/annotations_v2_10_2025/optical/ships/temp768/opt_ships.json"
 
-CLASS_NAMES = ["ship"]
+CLASS_NAMES = ["Ship"]
 # CLASS_NAMES = ["Commercial", "Military", "Submarines", "Recreational Boats", "Fishing Boats"]
 # CLASS_NAMES = ["aircraft", "helicopter"]
 
@@ -72,16 +81,17 @@ BATCH_SIZE = 4
 FORCE_RUN = False
 SWEEP_MODE = False
 SHOW_GT_SIDE_BY_SIDE = True
+SAVE_IMAGES = True  # Set to True to save visualizations
 
 # If MAX_IMAGES <= 0 → use all images in the dataset for COCO eval
-MAX_IMAGES = 100
+MAX_IMAGES = -1  # Set to -1 to use all images
 RANDOM_SEED = 42
 
 # Threshold grids for sweeps
 # Low score threshold so COCO can build a proper PR curve.
-SCORE_THRESHOLDS = [0.60]  # , 0.1, 0.3]
+SCORE_THRESHOLDS = [0.75]  # , 0.1, 0.3]
 # Reasonable NMS IOU for dense scenes
-NMS_THRESHOLDS = [0.3]
+NMS_THRESHOLDS = [0.5]
 # IOU used for our custom TP/FP/FN accounting (not COCO)
 IOU_THRESHOLD = 0.6
 # IOU used for per-class PR / confusion stats
@@ -110,18 +120,10 @@ def scan_and_report_best(output_root: str):
     print("\n Scanning for best model based on COCO AP...")
 
     def extract_ap(path: str):
-        """
-        Read AP from a metrics.json that may be:
-        - single JSON object with nested keys: {"bbox": {"AP": ..., "AP50": ...}}
-        - JSON-lines (Detectron2 training): many lines with flat keys: {"bbox/AP": ...}
-        Returns float AP or None.
-        """
         try:
             with open(path, "r", encoding="utf-8") as f:
                 first = f.read(1)
                 f.seek(0)
-
-                # Case A: try single JSON object
                 if first == "{":
                     try:
                         data = json.load(f)
@@ -131,8 +133,6 @@ def scan_and_report_best(output_root: str):
                             return float(data["bbox/AP"])
                     except json.JSONDecodeError:
                         f.seek(0)
-
-                # Case B: JSON-lines (training)
                 ap = None
                 for line in f:
                     try:
@@ -182,43 +182,79 @@ def compute_iou(boxA, boxB):
     union_area = boxA_area + boxB_area - inter_area
     return inter_area / union_area if union_area != 0 else 0
 
+def plot_confusion_matrix(cm, class_names, out_path):
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel('Predicted')
+    plt.ylabel('Ground Truth')
+    plt.title('Confusion Matrix')
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved confusion matrix plot to {out_path}")
+
+def plot_pr_curve(y_true, y_scores, class_name, ap_score, out_path):
+    precision, recall, _ = precision_recall_curve(y_true, y_scores)
+    plt.figure(figsize=(8, 6))
+    plt.plot(recall, precision, marker='.', label=f'{class_name} (AP={ap_score:.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title(f'Precision-Recall Curve - {class_name}')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved PR curve plot to {out_path}")
 
 def compute_detection_stats(df: pd.DataFrame, num_classes: int, iou_thresh: float, out_dir: str):
-    """
-    Compute per-class TP/FP/FN, precision, recall, F1 and a (num_classes+1)x(num_classes+1)
-    confusion matrix (last index = background).
-
-    NOTE:
-      - gt_class == -1 → background (no GT object)
-      - pred_class == -1 → no prediction
-      - We treat a GT as "correctly detected for class c" if:
-          gt_class == c AND pred_class == c AND iou >= iou_thresh
-      - Everything else counts as FP / FN accordingly.
-    """
     os.makedirs(out_dir, exist_ok=True)
     eval_rows = df.copy()
 
-    # Keep only rows that have at least GT or prediction
     eval_rows = eval_rows[(eval_rows["gt_class"] >= 0) | (eval_rows["pred_class"] >= 0)]
 
     stats = []
+    ap_scores = []
+    
     for c in range(num_classes):
         is_gt_c = eval_rows["gt_class"] == c
         is_pred_c = eval_rows["pred_class"] == c
 
-        # True positives for class c
         good_match = is_gt_c & is_pred_c & (eval_rows["iou"] >= iou_thresh)
         tp = int(good_match.sum())
-
-        # Any prediction of c that is not a good_match is FP for c
         fp = int((is_pred_c & ~good_match).sum())
-
-        # Any GT of c that is not a good_match is FN for c
         fn = int((is_gt_c & ~good_match).sum())
 
         prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+        
+        # AP Calculation
+        relevant_rows = eval_rows[(eval_rows["pred_class"] == c) | (eval_rows["gt_class"] == c)].copy()
+        if not relevant_rows.empty and is_gt_c.sum() > 0:
+            y_true_ap = []
+            y_scores = []
+            for _, row in relevant_rows.iterrows():
+                if row["pred_class"] == c:
+                    if row["gt_class"] == c and row["iou"] >= iou_thresh:
+                        y_true_ap.append(1) # TP
+                    else:
+                        y_true_ap.append(0) # FP
+                    y_scores.append(row["score"])
+                elif row["gt_class"] == c and row["pred_class"] != c:
+                    # Missed GT (either no prediction or predicted as wrong class)
+                    y_true_ap.append(1) # FN
+                    y_scores.append(0.0) # score 0
+            
+            try:
+                ap = average_precision_score(y_true_ap, y_scores)
+                # Save PR curve
+                class_name = CLASS_NAMES[c] if c < len(CLASS_NAMES) else f"class_{c}"
+                plot_pr_curve(y_true_ap, y_scores, class_name, ap, os.path.join(out_dir, f"pr_curve_{class_name}.png"))
+            except ValueError:
+                ap = 0.0
+        else:
+            ap = 0.0
+            
+        ap_scores.append(ap)
 
         stats.append({
             "class_id": c,
@@ -229,17 +265,17 @@ def compute_detection_stats(df: pd.DataFrame, num_classes: int, iou_thresh: floa
             "precision": prec,
             "recall": rec,
             "f1": f1,
+            "ap": ap
         })
 
-    # Micro-averaged overall stats
     total_tp = sum(s["tp"] for s in stats)
     total_fp = sum(s["fp"] for s in stats)
     total_fn = sum(s["fn"] for s in stats)
     micro_prec = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
     micro_rec = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
     micro_f1 = (2 * micro_prec * micro_rec / (micro_prec + micro_rec)) if (micro_prec + micro_rec) > 0 else 0.0
+    mAP = np.mean(ap_scores) if ap_scores else 0.0
 
-    # Multi-class confusion matrix (including background as last class index)
     def _map_class(x):
         return x if x >= 0 else num_classes
 
@@ -247,7 +283,6 @@ def compute_detection_stats(df: pd.DataFrame, num_classes: int, iou_thresh: floa
     pred_labels = eval_rows["pred_class"].apply(_map_class)
     cm = confusion_matrix(gt_labels, pred_labels, labels=list(range(num_classes + 1)))
 
-    # Save stats as CSV
     stats_df = pd.DataFrame(stats + [{
         "class_id": -1,
         "class_name": "micro_avg",
@@ -257,22 +292,25 @@ def compute_detection_stats(df: pd.DataFrame, num_classes: int, iou_thresh: floa
         "precision": micro_prec,
         "recall": micro_rec,
         "f1": micro_f1,
+        "ap": mAP # Represents mAP here
     }])
     stats_csv = os.path.join(out_dir, "detection_stats_per_class.csv")
     stats_df.to_csv(stats_csv, index=False)
 
-    # Save confusion matrix as CSV (last row/col = background)
     cm_csv = os.path.join(out_dir, "confusion_matrix_classes_plus_bg.csv")
     cm_df = pd.DataFrame(cm, index=[*CLASS_NAMES, "bg"], columns=[*CLASS_NAMES, "bg"])
     cm_df.to_csv(cm_csv, index_label="gt \\ pred")
+    
+    # Plot and save confusion matrix
+    cm_plot_path = os.path.join(out_dir, "confusion_matrix.png")
+    plot_confusion_matrix(cm, [*CLASS_NAMES, "bg"], cm_plot_path)
 
     print(f"Saved per-class stats to {stats_csv}")
-    print(f"Saved confusion matrix to {cm_csv}")
-    print("Per-class F1:")
+    print(f"Saved confusion matrix CSV to {cm_csv}")
+    print("Per-class F1 & AP:")
     for s in stats:
-        print(f"  {s['class_name']}: F1={s['f1']:.3f} (P={s['precision']:.3f}, R={s['recall']:.3f})")
-    print(f"Micro F1={micro_f1:.3f} (P={micro_prec:.3f}, R={micro_rec:.3f})")
-
+        print(f"  {s['class_name']}: F1={s['f1']:.3f} (P={s['precision']:.3f}, R={s['recall']:.3f}), AP={s['ap']:.3f}")
+    print(f"Micro F1={micro_f1:.3f} (P={micro_prec:.3f}, R={micro_rec:.3f}), mAP={mAP:.3f}")
 
 def run_inference(model_path, output_dir, score_thresh, nms_thresh):
     with open(JSON_PATH) as f:
@@ -287,8 +325,9 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
     id_to_filename = {img["id"]: img["file_name"] for img in coco_data["images"]}
 
     os.makedirs(output_dir, exist_ok=True)
-    vis_dir = os.path.join(output_dir, "vis")
-    os.makedirs(vis_dir, exist_ok=True)
+    if SAVE_IMAGES:
+        vis_dir = os.path.join(output_dir, "vis")
+        os.makedirs(vis_dir, exist_ok=True)
 
     csv_out_path = os.path.join(output_dir, "prediction_log.csv")
 
@@ -296,20 +335,18 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
     cfg.merge_from_file(model_zoo.get_config_file("COCO-Detection/faster_rcnn_R_50_FPN_3x.yaml"))
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = len(CLASS_NAMES)
     cfg.MODEL.WEIGHTS = model_path
-
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = score_thresh
     cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = nms_thresh
-    cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = False
+    # cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG = False
     # Finetune params.
     # example that gives 3 anchors/location:
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[32], [64], [128], [256], [512]]
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.5, 1.0, 2.0]] * 5
     # 1 size * 3 aspect ratios = 3 anchors/location
-
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES         = [[8, 12], [12, 16], [16, 24], [24, 32], [32, 48]]
     # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[8], [12], [16], [24], [32]] # VANILLA worked
-    # cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 32], [32, 64], [64, 128], [128, 256], [256, 512]]
-    # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.25, 0.5, 1.0, 2.0, 4.0]] * 5
+    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 32], [32, 64], [64, 128], [128, 256], [256, 512]]
+    cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.25, 0.5, 1.0, 2.0, 4.0]] * 5
     # cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.5, 1.0, 2.0]]
     # cfg.MODEL.RPN.IN_FEATURES   = ["p2", "p3", "p4", "p5", "p6"]
     # cfg.MODEL.ROI_HEADS.IN_FEATURES = ["p2", "p3", "p4", "p5"]
@@ -377,7 +414,6 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
             gt_ann = gt_annotations.get(img_id, [])
             matched_gt_ids = set()
 
-            # ---- match predictions to GT (simple best-IoU per prediction) ----
             for box, cls, score in zip(pred_boxes, pred_classes, scores):
                 best_iou, best_gt_idx, assigned_gt_class = 0.0, -1, -1
                 for j, gt in enumerate(gt_ann):
@@ -427,38 +463,39 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
                 })
 
             # ---- Visualization ----
-            custom_metadata = MetadataCatalog.get("__unused__")
-            custom_metadata.thing_classes = CLASS_NAMES
+            if SAVE_IMAGES:
+                custom_metadata = MetadataCatalog.get("__unused__")
+                custom_metadata.thing_classes = CLASS_NAMES
 
-            if SHOW_GT_SIDE_BY_SIDE:
-                gt_instances = []
-                for gt in gt_ann:
-                    gt_box = BoxMode.convert(gt["bbox"], BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
-                    gt_instances.append({"bbox": gt_box, "category_id": gt["category_id"]})
-                if gt_instances:
-                    gt_vis = Visualizer(im[:, :, ::-1], metadata=custom_metadata, scale=1.0)
-                    gt_vis_instances = Instances(im.shape[:2])
-                    gt_vis_instances.pred_boxes = Boxes(torch.tensor([g["bbox"] for g in gt_instances]))
-                    gt_vis_instances.pred_classes = torch.tensor([g["category_id"] for g in gt_instances])
-                    gt_image = gt_vis.overlay_instances(
-                        boxes=gt_vis_instances.pred_boxes,
-                        labels=["GT"] * len(gt_vis_instances),
-                        assigned_colors=[(0.0, 0.0, 1.0)] * len(gt_vis_instances),
-                    ).get_image()
+                if SHOW_GT_SIDE_BY_SIDE:
+                    gt_instances = []
+                    for gt in gt_ann:
+                        gt_box = BoxMode.convert(gt["bbox"], BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
+                        gt_instances.append({"bbox": gt_box, "category_id": gt["category_id"]})
+                    if gt_instances:
+                        gt_vis = Visualizer(im[:, :, ::-1], metadata=custom_metadata, scale=1.0)
+                        gt_vis_instances = Instances(im.shape[:2])
+                        gt_vis_instances.pred_boxes = Boxes(torch.tensor([g["bbox"] for g in gt_instances]))
+                        gt_vis_instances.pred_classes = torch.tensor([g["category_id"] for g in gt_instances])
+                        gt_image = gt_vis.overlay_instances(
+                            boxes=gt_vis_instances.pred_boxes,
+                            labels=["GT"] * len(gt_vis_instances),
+                            assigned_colors=[(0.0, 0.0, 1.0)] * len(gt_vis_instances),
+                        ).get_image()
+                    else:
+                        gt_image = im[:, :, ::-1]
+
+                # pred_viz = Visualizer(im[:, :, ::-1], metadata=custom_metadata, scale=1.0)
+                pred_viz = Visualizer(im, metadata=custom_metadata, scale=1.0)
+
+                pred_image = pred_viz.draw_instance_predictions(instances).get_image()
+                out_path = os.path.join(vis_dir, os.path.basename(img_path))
+                if SHOW_GT_SIDE_BY_SIDE:
+                    gap = np.ones((im.shape[0], 5, 3), dtype=np.uint8) * 255
+                    combined = np.concatenate((gt_image, gap, pred_image), axis=1)
+                    cv2.imwrite(out_path, combined)
                 else:
-                    gt_image = im[:, :, ::-1]
-
-            # pred_viz = Visualizer(im[:, :, ::-1], metadata=custom_metadata, scale=1.0)
-            pred_viz = Visualizer(im, metadata=custom_metadata, scale=1.0)
-
-            pred_image = pred_viz.draw_instance_predictions(instances).get_image()
-            out_path = os.path.join(vis_dir, os.path.basename(img_path))
-            if SHOW_GT_SIDE_BY_SIDE:
-                gap = np.ones((im.shape[0], 5, 3), dtype=np.uint8) * 255
-                combined = np.concatenate((gt_image, gap, pred_image), axis=1)
-                cv2.imwrite(out_path, combined)
-            else:
-                cv2.imwrite(out_path, pred_image)
+                    cv2.imwrite(out_path, pred_image)
 
     elapsed = time.perf_counter() - t0
     peak_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
@@ -501,17 +538,6 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
         df["tnr"] = tnr
         df.to_csv(csv_out_path, index=False)
         print(f"✅ Saved predictions to {csv_out_path}")
-
-    try:
-        if os.path.getsize(csv_out_path) == 0:
-            print(" Total predicted instances: 0 (CSV empty)")
-        else:
-            df_pred = pd.read_csv(csv_out_path)
-            print(f" Total predicted instances: {len(df_pred)}")
-    except pd.errors.EmptyDataError:
-        print(" Total predicted instances: 0 (CSV had no rows)")
-    except Exception as e:
-        print(f" Total predicted instances: n/a (could not read CSV: {e})")
 
     # --- Extra: per-class PR/F1 + confusion matrix ---
     compute_detection_stats(df, num_classes=len(CLASS_NAMES), iou_thresh=METRIC_IOU, out_dir=output_dir)
@@ -581,7 +607,6 @@ def run_inference(model_path, output_dir, score_thresh, nms_thresh):
             with open(metrics_out, "w") as jf:
                 json.dump(results, jf, indent=2)
             print(f" Saved metrics to {metrics_out}")
-
 
 if __name__ == "__main__":
 
